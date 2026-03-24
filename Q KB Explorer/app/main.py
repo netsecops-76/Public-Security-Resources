@@ -403,6 +403,13 @@ def trigger_sync(data_type):
     data = request.json or {}
     full = data.get("full", False)
 
+    # Policy sync requires CIDs to be synced first (for technology filters and control cross-refs)
+    if data_type == "policies":
+        from app.database import get_last_sync_datetime
+        cid_last_sync = get_last_sync_datetime("cids")
+        if not cid_last_sync:
+            return jsonify({"error": "CID data required. Sync CIDs before syncing Policies — policies reference CID controls for technology filters and cross-references."}), 400
+
     client, error, cred_id = _build_client(data)
     if error:
         return jsonify({"error": error}), 400

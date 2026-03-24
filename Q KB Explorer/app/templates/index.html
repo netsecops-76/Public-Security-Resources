@@ -717,17 +717,10 @@
                 <div class="sync-row" id="syncRowMandates">
                     <div class="sync-info">
                         <span class="sync-label">Mandates (Frameworks)</span>
-                        <span class="sync-meta" id="syncMandateMeta">Not synced</span>
-                        <div id="schedBadgeMandates" class="schedule-badge" style="display:none;"></div>
+                        <span class="sync-meta" id="syncMandateMeta">Not yet extracted</span>
                     </div>
                     <div class="sync-actions">
-                        <button class="btn-sm btn-outline" onclick="showSyncDetails('mandates')">Last Sync Details</button>
-                        <button class="btn-sm" onclick="showDeltaSyncModal('mandates')">Delta Sync</button>
-                        <button class="btn-sm btn-warn" onclick="triggerSync('mandates', true)">Full Sync</button>
-                    </div>
-                    <div class="sync-progress" id="syncProgressMandates" style="display:none">
-                        <div class="sync-progress-bar"><div class="sync-progress-fill" id="syncFillMandates"></div></div>
-                        <span class="sync-progress-text" id="syncTextMandates"></span>
+                        <span class="sync-auto-label" id="mandateAutoLabel" style="font-size:0.8rem;opacity:0.7;white-space:nowrap;">Auto-extracted during CID sync</span>
                     </div>
                 </div>
                 <!-- CID dependency warning for Policies -->
@@ -870,6 +863,9 @@
             <div class="help-section">
                 <h3>Data Sync</h3>
                 <ul>
+                    <li><strong>QIDs</strong> and <strong>CIDs</strong> sync independently from the Qualys API.</li>
+                    <li><strong>Policies</strong> require CIDs to be synced first &mdash; policies reference CID controls for technology filters and cross-references.</li>
+                    <li><strong>Mandates (Frameworks)</strong> are automatically extracted during CID sync &mdash; no separate sync needed. Mandate data comes from FRAMEWORK_LIST elements in the CID API response.</li>
                     <li><strong>Delta Sync</strong> &mdash; Pulls only records modified since last sync. Fast and efficient.</li>
                     <li><strong>Full Sync</strong> &mdash; Pulls all records. Use for initial sync or monthly refresh. Existing data is purged first.</li>
                     <li><strong>Scheduling</strong> &mdash; Set up recurring syncs (weekly, bi-weekly, monthly) with timezone support.</li>

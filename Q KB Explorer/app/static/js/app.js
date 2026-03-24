@@ -1314,13 +1314,13 @@ function updateMandateSyncDisplay(mandateState, cidState) {
 
     if (count > 0 && mandateState.last_sync) {
         const date = new Date(mandateState.last_sync).toLocaleString();
-        metaEl.textContent = count.toLocaleString() + " frameworks \u00B7 Updated from CID sync: " + date;
+        metaEl.textContent = count.toLocaleString() + " frameworks \u00B7 Last extracted: " + date;
     } else if (cidState && cidState.last_sync && count === 0) {
-        metaEl.textContent = "No frameworks found \u00B7 Run a CID Full Sync to extract mandate data";
+        metaEl.textContent = "No frameworks found in CID data \u00B7 Try a CID Full Sync";
     } else if (!cidState || !cidState.last_sync) {
-        metaEl.textContent = "Extracted from CID sync \u00B7 Run a CID sync first";
+        metaEl.textContent = "Sync CIDs first \u2014 mandates are extracted from CID data";
     } else {
-        metaEl.textContent = "Extracted from CID sync";
+        metaEl.textContent = "Extracted automatically during CID sync";
     }
     if (countEl) countEl.textContent = "Total: " + count.toLocaleString();
 }
@@ -1525,6 +1525,17 @@ async function pollSyncProgress(type) {
                     textEl.textContent = "Done — " + count + " records synced (" + pages + " pages)";
                     fillEl.classList.add("complete");
                     showToast(type.toUpperCase() + " sync complete: " + count + " records", "success");
+                    // CID sync also extracts mandates — show mandate count after refresh
+                    if (type === "cids") {
+                        setTimeout(async () => {
+                            try {
+                                const sr = await apiFetch("/api/sync/status");
+                                const ss = await sr.json();
+                                const mc = (ss.mandates && ss.mandates.record_count) || 0;
+                                if (mc > 0) showToast(mc.toLocaleString() + " mandate frameworks extracted from CID data", "info");
+                            } catch (_) {}
+                        }, 500);
+                    }
                 }
                 loadSyncStatus();
                 loadFilterOptions(); // Refresh multi-select dropdown options

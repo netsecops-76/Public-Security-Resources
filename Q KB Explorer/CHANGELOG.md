@@ -17,6 +17,11 @@
 - Bulk export is now CSV-only for QIDs and CIDs (PDF removed due to reportlab layout issues with large content fields)
 - Bulk CSV export is now unlimited (removed 200-item cap)
 - Select mode now hides regular export buttons to prevent accidental full-result exports
+- Mandates sync buttons removed from Settings tab (mandates auto-extracted during CID sync, not a separate API)
+- Mandate status card now shows read-only extraction info: count, last extraction date, or prompt to sync CIDs
+- Policy sync now requires CIDs to be synced first (returns 400 with helpful message if not)
+- CID sync completion now shows toast with mandate extraction count
+- Help tab Data Sync section updated with sync dependency chain
 
 ### Fixed
 - Supported modules XML parsing handles string/dict/list variants from xmltodict
