@@ -588,8 +588,6 @@ def qids_export_details():
         fmt = data.get("format", "csv")
         if not ids:
             return jsonify({"error": "No QIDs provided"}), 400
-        if len(ids) > 200:
-            return jsonify({"error": "Maximum 200 QIDs per export"}), 400
         try:
             ids = [int(i) for i in ids]
         except (ValueError, TypeError):
@@ -688,8 +686,6 @@ def cids_export_details():
         fmt = data.get("format", "csv")
         if not ids:
             return jsonify({"error": "No CIDs provided"}), 400
-        if len(ids) > 200:
-            return jsonify({"error": "Maximum 200 CIDs per export"}), 400
         try:
             ids = [int(i) for i in ids]
         except (ValueError, TypeError):
