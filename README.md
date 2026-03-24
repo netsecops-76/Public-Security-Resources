@@ -1,12 +1,30 @@
-# Public Security Resources
+# Qualys Cloud Agent Troubleshooting Scripts
 
-A collection of security scripts and tools available for use at your own risk.
+Automated diagnostic and troubleshooting tools for the Qualys Cloud Agent. Collects system, network, and agent health data without requiring specific Qualys knowledge.
 
-## Available Resources
+## Getting Started
 
-| Resource | Description | Platforms | Branch |
-|----------|-------------|-----------|--------|
-| [Qualys Cloud Agent Troubleshooting Scripts](https://github.com/netsecops-76/Public-Security-Resources/tree/Qualys-Cloud-Agent-Troubleshooting-Scripts/Qualys%20Cloud%20Agent%20Troubleshooting%20Scripts) | Automated diagnostic and troubleshooting tools for the Qualys Cloud Agent. Collects system, network, and agent health data without requiring specific Qualys knowledge. | Windows (PowerShell), Linux (Python) | `Qualys-Cloud-Agent-Troubleshooting-Scripts` |
+See the full documentation and scripts in the [Qualys Cloud Agent Troubleshooting Scripts](Qualys%20Cloud%20Agent%20Troubleshooting%20Scripts/) folder.
+
+| Platform | Script | Requirements |
+|----------|--------|--------------|
+| Windows | `qualys_agent_troubleshoot.ps1` | PowerShell 5.1, Administrator |
+| Linux | `qualys_agent_troubleshoot.py` | Python 3.6+, Root access |
+
+## Quick Start
+
+### Windows
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\qualys_agent_troubleshoot.ps1
+```
+
+### Linux
+
+```bash
+sudo python3 qualys_agent_troubleshoot.py
+```
 
 ## Disclaimer
 
