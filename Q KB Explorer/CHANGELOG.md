@@ -13,8 +13,19 @@
 - `vuln_supported_modules` database table
 - Project documentation and Dependabot configuration
 
+### Changed
+- Bulk export is now CSV-only for QIDs and CIDs (PDF removed due to reportlab layout issues with large content fields)
+- Bulk CSV export is now unlimited (removed 200-item cap)
+- Select mode now hides regular export buttons to prevent accidental full-result exports
+
 ### Fixed
 - Supported modules XML parsing handles string/dict/list variants from xmltodict
+- PDF export word wrap and smart column widths for Policies and Mandates
+- HTML tags stripped from PDF export fields, remediation URLs preserved as plain text
+- Select mode export bug: regular CSV button was visible during select mode, causing full-result export instead of selected-only
+
+### Removed
+- PDF export buttons from QID and CID tabs (CSV remains; PDF still available on Policies and Mandates)
 
 ### Security
 - HTML sanitization on QID diagnosis/consequence/solution fields (bleach)
@@ -38,12 +49,11 @@
 - Keyboard shortcuts: `1`-`7` tabs, `/` focus search, `?` shortcuts modal, `t` toggle theme, `b` bookmark (Roadmap #47)
 - Bookmark/favorite QIDs, CIDs, and Policies with star icons on cards and detail modals, stored in localStorage (Roadmap #44)
 - Recent searches history with clock icon dropdown on all search bars, max 20 entries in localStorage (Roadmap #45)
-- Bulk export: Select mode on QID and CID tabs with CSV/PDF export of full details including CVEs, diagnosis, solution (Roadmap #46)
-- `POST /api/qids/export-details` endpoint for bulk QID detail export (limit 200)
-- `POST /api/cids/export-details` endpoint for bulk CID detail export (limit 200)
+- Bulk export: Select mode on QID and CID tabs with CSV export of full details including CVEs, diagnosis, solution (Roadmap #46)
+- `GET /api/qids/export-details` endpoint for bulk QID detail CSV export (unlimited)
+- `GET /api/cids/export-details` endpoint for bulk CID detail CSV export (unlimited)
 - Help tab (7th tab) with comprehensive documentation: Quick Start, Data Types, Search, Policy Migration, Bookmarks, Bulk Export, Shortcuts, Troubleshooting (Roadmap #48)
 - Keyboard shortcuts modal (`?` key or via Help tab)
-- 7 new tests for bulk export endpoints (82 total)
 
 ---
 

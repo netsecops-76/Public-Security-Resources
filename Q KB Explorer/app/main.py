@@ -579,13 +579,13 @@ def qids_detail(qid):
         return jsonify({"error": "Internal server error"}), 500
 
 
-@app.route("/api/qids/export-details", methods=["POST"])
+@app.route("/api/qids/export-details")
 def qids_export_details():
     """Bulk export full QID details (CVEs, diagnosis, solution, etc.)."""
     try:
-        data = request.json or {}
-        ids = data.get("ids", [])
-        fmt = data.get("format", "csv")
+        ids_param = request.args.get("ids", "")
+        ids = [s.strip() for s in ids_param.split(",") if s.strip()]
+        fmt = request.args.get("format", "csv")
         if not ids:
             return jsonify({"error": "No QIDs provided"}), 400
         try:
@@ -593,6 +593,7 @@ def qids_export_details():
         except (ValueError, TypeError):
             return jsonify({"error": "Invalid QID ID"}), 400
 
+        text_limit = 0  # Full text for CSV
         headers = ["QID", "Title", "Severity", "Category", "Type", "Patchable",
                     "CVSS v2", "CVSS v3", "Published", "Modified", "CVEs",
                     "Bugtraqs", "Supported Modules", "Diagnosis", "Solution"]
@@ -604,18 +605,20 @@ def qids_export_details():
             cves = ", ".join(c.get("cve_id", "") for c in (v.get("cves") or []))
             bugtraqs = ", ".join(str(b.get("bugtraq_id", "")) for b in (v.get("bugtraqs") or []))
             mods = ", ".join(v.get("supported_modules") or [])
+            diag = _strip_html(v.get("diagnosis") or "")
+            soln = _strip_html(v.get("solution") or "")
+            if text_limit:
+                diag = diag[:text_limit] + ("..." if len(diag) > text_limit else "")
+                soln = soln[:text_limit] + ("..." if len(soln) > text_limit else "")
             rows.append([
                 v.get("qid"), v.get("title"), v.get("severity_level"),
                 v.get("category"), v.get("vuln_type"),
                 "Yes" if v.get("patchable") else "No",
                 v.get("cvss_base"), v.get("cvss3_base"),
                 v.get("published_datetime", ""), v.get("last_service_modification_datetime", ""),
-                cves, bugtraqs, mods,
-                (v.get("diagnosis") or "")[:500], (v.get("solution") or "")[:500],
+                cves, bugtraqs, mods, diag, soln,
             ])
 
-        if fmt == "pdf":
-            return _pdf_response("QID Detail Export", headers, rows, "qkbe-qid-details.pdf")
         return _csv_response(rows, headers, "qkbe-qid-details.csv")
     except Exception:
         logger.exception("Request failed: %s %s", request.method, request.path)
@@ -677,13 +680,13 @@ def cids_detail(cid):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-@app.route("/api/cids/export-details", methods=["POST"])
+@app.route("/api/cids/export-details")
 def cids_export_details():
     """Bulk export full CID details (technologies, linked policies, etc.)."""
     try:
-        data = request.json or {}
-        ids = data.get("ids", [])
-        fmt = data.get("format", "csv")
+        ids_param = request.args.get("ids", "")
+        ids = [s.strip() for s in ids_param.split(",") if s.strip()]
+        fmt = request.args.get("format", "csv")
         if not ids:
             return jsonify({"error": "No CIDs provided"}), 400
         try:
@@ -691,6 +694,7 @@ def cids_export_details():
         except (ValueError, TypeError):
             return jsonify({"error": "Invalid CID ID"}), 400
 
+        text_limit = 0
         headers = ["CID", "Category", "Sub-Category", "Criticality", "Check Type",
                     "Statement", "Technologies", "Linked Policies", "Created", "Updated"]
         rows = []
@@ -699,17 +703,17 @@ def cids_export_details():
             if not c:
                 continue
             techs = ", ".join(t.get("tech_name", "") for t in (c.get("technologies") or []))
-            policies = ", ".join(str(p.get("policy_id", "")) for p in (c.get("linked_policies") or []))
+            policies_str = ", ".join(str(p.get("policy_id", "")) for p in (c.get("linked_policies") or []))
+            stmt = (c.get("statement") or "")
+            if text_limit:
+                stmt = stmt[:text_limit] + ("..." if len(stmt) > text_limit else "")
             rows.append([
                 c.get("cid"), c.get("category"), c.get("sub_category"),
                 c.get("criticality_label"), c.get("check_type"),
-                (c.get("statement") or "")[:500],
-                techs, policies,
+                stmt, techs, policies_str,
                 c.get("created_date", ""), c.get("update_date", ""),
             ])
 
-        if fmt == "pdf":
-            return _pdf_response("CID Detail Export", headers, rows, "qkbe-cid-details.pdf")
         return _csv_response(rows, headers, "qkbe-cid-details.csv")
     except Exception:
         logger.exception("Request failed: %s %s", request.method, request.path)
@@ -1355,8 +1359,23 @@ def _csv_response(rows, headers, filename):
     return resp
 
 
+def _strip_html(text: str) -> str:
+    """Strip HTML tags from text, preserving link URLs and converting breaks to newlines."""
+    if not text:
+        return ""
+    import re
+    # Convert <a href="URL">text</a> → text (URL) to preserve patch/remediation links
+    text = re.sub(r'<a\s+[^>]*href=["\']([^"\']+)["\'][^>]*>(.*?)</a>',
+                  r'\2 (\1)', text, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r'<br\s*/?>',  '\n', text, flags=re.IGNORECASE)
+    text = re.sub(r'</p>',       '\n', text, flags=re.IGNORECASE)
+    text = re.sub(r'<[^>]+>',    '',   text)
+    text = re.sub(r'\n{3,}',     '\n\n', text)
+    return text.strip()
+
+
 def _pdf_response(title, headers, rows, filename):
-    """Build a PDF table download response using reportlab."""
+    """Build a PDF table download response using reportlab with word wrap."""
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import letter, landscape
     from reportlab.lib.units import inch
@@ -1366,37 +1385,71 @@ def _pdf_response(title, headers, rows, filename):
 
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=landscape(letter),
-                            leftMargin=0.5 * inch, rightMargin=0.5 * inch,
+                            leftMargin=0.4 * inch, rightMargin=0.4 * inch,
                             topMargin=0.5 * inch, bottomMargin=0.5 * inch)
     styles = getSampleStyleSheet()
+
     elements = []
 
     # Title
     elements.append(Paragraph(title, styles["Title"]))
-    elements.append(Paragraph(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} — {len(rows)} records",
-                              styles["Normal"]))
+    elements.append(Paragraph(
+        f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} — {len(rows)} records",
+        styles["Normal"]))
     elements.append(Spacer(1, 12))
 
-    # Table
-    table_data = [headers] + [[str(v) if v is not None else "" for v in row] for row in rows]
+    # Column classification for width and truncation
+    _WIDE_COLS = {"Title", "Diagnosis", "Solution", "Statement", "Technologies",
+                  "CVEs", "Linked Policies", "Category", "Sub-Category"}
+    _MEDIUM_COLS = {"Supported Modules", "Bugtraqs", "Check Type", "Description"}
 
-    # Calculate column widths proportionally
-    avail_width = landscape(letter)[0] - 1 * inch
-    col_width = avail_width / len(headers)
-    col_widths = [col_width] * len(headers)
+    # Build table data — truncate cell text to fit column widths
+    def _trunc(val, maxlen=60):
+        s = str(val) if val is not None else ""
+        s = s.replace("\n", " ").replace("\r", "")
+        return s[:maxlen] + "..." if len(s) > maxlen else s
+
+    char_limits = []
+    for h in headers:
+        if h in _WIDE_COLS:
+            char_limits.append(120)
+        elif h in _MEDIUM_COLS:
+            char_limits.append(80)
+        else:
+            char_limits.append(40)
+
+    table_data = [headers]
+    for row in rows:
+        table_data.append([_trunc(v, char_limits[i]) for i, v in enumerate(row)])
+
+    # Smart column widths — assign more space to text-heavy columns
+    avail_width = landscape(letter)[0] - 0.8 * inch
+    weights = []
+    for h in headers:
+        if h in _WIDE_COLS:
+            weights.append(3.0)
+        elif h in _MEDIUM_COLS:
+            weights.append(1.8)
+        else:
+            weights.append(1.0)
+    total_w = sum(weights)
+    col_widths = [(w / total_w) * avail_width for w in weights]
 
     t = Table(table_data, colWidths=col_widths, repeatRows=1)
     style = TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2a2f3e")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, 0), 8),
+        ("FONTSIZE", (0, 0), (-1, 0), 7),
         ("FONTSIZE", (0, 1), (-1, -1), 7),
         ("ALIGN", (0, 0), (-1, -1), "LEFT"),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#d0d4dc")),
         ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f4f5f7")]),
-        ("WORDWRAP", (0, 0), (-1, -1), True),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
     ])
     t.setStyle(style)
     elements.append(t)

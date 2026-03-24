@@ -2343,7 +2343,7 @@ let _qidSelectMode = false;
 function enterQidSelectMode() {
     _qidSelectMode = true;
     document.getElementById("qidSelectBar").style.display = "flex";
-    document.getElementById("qidSelectBtn").style.display = "none";
+    document.getElementById("qidExportActions").style.display = "none";
     document.getElementById("qidSelectAll").checked = false;
     _updateQidSelectedCount();
     document.querySelectorAll("#qidResults .qid-card").forEach(card => {
@@ -2365,7 +2365,7 @@ function enterQidSelectMode() {
 function exitQidSelectMode() {
     _qidSelectMode = false;
     document.getElementById("qidSelectBar").style.display = "none";
-    document.getElementById("qidSelectBtn").style.display = "";
+    document.getElementById("qidExportActions").style.display = "";
     searchQids();
 }
 
@@ -2379,25 +2379,10 @@ function _updateQidSelectedCount() {
     document.getElementById("qidSelectedCount").textContent = count + " selected";
 }
 
-async function exportSelectedQids(format) {
+function exportSelectedQids() {
     const ids = Array.from(document.querySelectorAll("#qidResults .qid-select-cb:checked")).map(cb => parseInt(cb.dataset.qid));
     if (ids.length === 0) { showToast("No QIDs selected", "info"); return; }
-    try {
-        showLoading("Exporting " + ids.length + " QIDs...");
-        const resp = await apiFetch("/api/qids/export-details", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ ids, format }),
-        });
-        if (!resp.ok) { const e = await resp.json(); showToast(e.error || "Export failed", "error"); hideLoading(); return; }
-        const blob = await resp.blob();
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url; a.download = "qkbe-qid-details." + format; a.click();
-        URL.revokeObjectURL(url);
-        hideLoading();
-        showToast("Exported " + ids.length + " QIDs", "success");
-    } catch (e) { hideLoading(); showToast("Export failed: " + e.message, "error"); }
+    window.open("/api/qids/export-details?ids=" + ids.join(",") + "&format=csv", "_blank");
 }
 
 // ─── CID Select / Bulk Export Mode ───────────────────────────────────────
@@ -2406,7 +2391,7 @@ let _cidSelectMode = false;
 function enterCidSelectMode() {
     _cidSelectMode = true;
     document.getElementById("cidSelectBar").style.display = "flex";
-    document.getElementById("cidSelectBtn").style.display = "none";
+    document.getElementById("cidExportActions").style.display = "none";
     document.getElementById("cidSelectAll").checked = false;
     _updateCidSelectedCount();
     document.querySelectorAll("#cidResults .cid-card").forEach(card => {
@@ -2428,7 +2413,7 @@ function enterCidSelectMode() {
 function exitCidSelectMode() {
     _cidSelectMode = false;
     document.getElementById("cidSelectBar").style.display = "none";
-    document.getElementById("cidSelectBtn").style.display = "";
+    document.getElementById("cidExportActions").style.display = "";
     searchCids();
 }
 
@@ -2442,25 +2427,10 @@ function _updateCidSelectedCount() {
     document.getElementById("cidSelectedCount").textContent = count + " selected";
 }
 
-async function exportSelectedCids(format) {
+function exportSelectedCids() {
     const ids = Array.from(document.querySelectorAll("#cidResults .cid-select-cb:checked")).map(cb => parseInt(cb.dataset.cid));
     if (ids.length === 0) { showToast("No CIDs selected", "info"); return; }
-    try {
-        showLoading("Exporting " + ids.length + " CIDs...");
-        const resp = await apiFetch("/api/cids/export-details", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ ids, format }),
-        });
-        if (!resp.ok) { const e = await resp.json(); showToast(e.error || "Export failed", "error"); hideLoading(); return; }
-        const blob = await resp.blob();
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url; a.download = "qkbe-cid-details." + format; a.click();
-        URL.revokeObjectURL(url);
-        hideLoading();
-        showToast("Exported " + ids.length + " CIDs", "success");
-    } catch (e) { hideLoading(); showToast("Export failed: " + e.message, "error"); }
+    window.open("/api/cids/export-details?ids=" + ids.join(",") + "&format=csv", "_blank");
 }
 
 function _criticalityColor(label) {

@@ -205,7 +205,6 @@
             <h2>Knowledge Base — QIDs</h2>
             <div class="export-actions" id="qidExportActions" style="display:none;">
                 <button class="btn-sm btn-outline" onclick="exportCSV('qids')" title="Export to CSV">CSV</button>
-                <button class="btn-sm btn-outline" onclick="exportPDF('qids')" title="Export to PDF">PDF</button>
                 <button class="btn-sm btn-outline btn-select-mode" id="qidSelectBtn" onclick="enterQidSelectMode()" title="Select QIDs for bulk export">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
                     Select
@@ -312,8 +311,7 @@
     <div id="qidSelectBar" class="batch-action-bar" style="display:none;">
         <label class="rti-check"><input type="checkbox" id="qidSelectAll" onchange="toggleAllQids(this.checked)"> Select All</label>
         <span id="qidSelectedCount" class="batch-count">0 selected</span>
-        <button class="btn-sm btn-primary" onclick="exportSelectedQids('csv')">Export CSV</button>
-        <button class="btn-sm btn-primary" onclick="exportSelectedQids('pdf')">Export PDF</button>
+        <button class="btn-sm btn-primary" onclick="exportSelectedQids()">Export CSV</button>
         <button class="btn-sm btn-outline" onclick="exitQidSelectMode()">Cancel</button>
     </div>
     <div id="qidResults" class="results-grid">
@@ -331,7 +329,6 @@
             <h2>Compliance Controls — CIDs</h2>
             <div class="export-actions" id="cidExportActions" style="display:none;">
                 <button class="btn-sm btn-outline" onclick="exportCSV('cids')" title="Export to CSV">CSV</button>
-                <button class="btn-sm btn-outline" onclick="exportPDF('cids')" title="Export to PDF">PDF</button>
                 <button class="btn-sm btn-outline btn-select-mode" id="cidSelectBtn" onclick="enterCidSelectMode()" title="Select CIDs for bulk export">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
                     Select
@@ -376,8 +373,7 @@
     <div id="cidSelectBar" class="batch-action-bar" style="display:none;">
         <label class="rti-check"><input type="checkbox" id="cidSelectAll" onchange="toggleAllCids(this.checked)"> Select All</label>
         <span id="cidSelectedCount" class="batch-count">0 selected</span>
-        <button class="btn-sm btn-primary" onclick="exportSelectedCids('csv')">Export CSV</button>
-        <button class="btn-sm btn-primary" onclick="exportSelectedCids('pdf')">Export PDF</button>
+        <button class="btn-sm btn-primary" onclick="exportSelectedCids()">Export CSV</button>
         <button class="btn-sm btn-outline" onclick="exitCidSelectMode()">Cancel</button>
     </div>
     <div id="cidResults" class="results-grid">
@@ -865,9 +861,9 @@
                 <h3>Bulk Export</h3>
                 <ul>
                     <li>Click the <strong>Select</strong> button in the QID or CID tab header to enter select mode.</li>
-                    <li>Check individual items or use Select All, then export as CSV or PDF.</li>
+                    <li>Check individual items or use Select All, then export as CSV.</li>
                     <li>Bulk exports include full detail fields (CVEs, diagnosis, solution, etc.).</li>
-                    <li>No limit on the number of items per bulk export.</li>
+                    <li>CSV exports are unlimited. PDF export is available for Policies and Mandates.</li>
                 </ul>
             </div>
 

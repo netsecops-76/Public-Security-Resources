@@ -1,7 +1,7 @@
 # Q KB Explorer — API Reference
 
-> Total endpoints: 48 | Base URL: `/api`
-> Auth: Vault-based session cookie (`qkbe-vault-unlocked`)
+> Total endpoints: 50 (49 API + 1 page) | Base URL: `/api`
+> Auth: Vault-based session cookie (`qkbe-vault-unlocked`, HttpOnly)
 
 ## Quick Reference Table
 
@@ -27,11 +27,11 @@
 | GET | `/api/qids` | Search QIDs (FTS + filters + pagination) | Yes |
 | GET | `/api/qids/filter-values` | Distinct filter values for dropdowns | Yes |
 | GET | `/api/qids/<qid>` | Full QID detail | Yes |
-| POST | `/api/qids/export-details` | Bulk export full QID details (limit 200) | Yes |
+| GET | `/api/qids/export-details` | Bulk export full QID details (CSV) | Yes |
 | GET | `/api/cids` | Search CIDs (FTS + filters + pagination) | Yes |
 | GET | `/api/cids/filter-values` | Distinct filter values for dropdowns | Yes |
 | GET | `/api/cids/<cid>` | Full CID detail with technologies | Yes |
-| POST | `/api/cids/export-details` | Bulk export full CID details (limit 200) | Yes |
+| GET | `/api/cids/export-details` | Bulk export full CID details (CSV) | Yes |
 | GET | `/api/policies` | Search policies (filters + pagination) | Yes |
 | DELETE | `/api/policies` | Delete policies by ID | Yes |
 | GET | `/api/policies/filter-values` | Distinct filter values for dropdowns | Yes |
@@ -53,8 +53,6 @@
 | GET | `/api/export/policies/csv` | Export filtered policies to CSV | Yes |
 | GET | `/api/export/mandates/csv` | Export filtered mandates to CSV | Yes |
 | GET | `/api/export/mandate-map/csv` | Export mandate compliance mapping CSV | Yes |
-| GET | `/api/export/qids/pdf` | Export filtered QIDs to PDF | Yes |
-| GET | `/api/export/cids/pdf` | Export filtered CIDs to PDF | Yes |
 | GET | `/api/export/policies/pdf` | Export filtered policies to PDF | Yes |
 | GET | `/api/export/mandates/pdf` | Export filtered mandates to PDF | Yes |
 
@@ -62,7 +60,7 @@
 
 ## Endpoint Groups
 
-### 🔓 Auth & Credentials — `/api/credentials/`, `/api/auth/`
+### Auth & Credentials — `/api/credentials/`, `/api/auth/`
 
 #### GET `/api/credentials`
 - **Auth:** None (needed for initial setup)
@@ -77,6 +75,7 @@
 
 #### POST `/api/credentials/verify`
 - **Auth:** None
+- **Rate limit:** 5 requests per minute
 - **Request body:** `{ "credential_id": "...", "password": "..." }`
 - **Response (200):** `{ "verified": true/false }`
 - **Notes:** Uses `secrets.compare_digest()` for timing-safe comparison
@@ -88,7 +87,7 @@
 
 ---
 
-### 🔗 Connection Testing — `/api/test-connection`
+### Connection Testing — `/api/test-connection`
 
 #### POST `/api/test-connection`
 - **Auth:** Yes
@@ -98,7 +97,7 @@
 
 ---
 
-### 🔄 Sync — `/api/sync/`
+### Sync — `/api/sync/`
 
 #### GET `/api/sync/status`
 - **Auth:** Yes
@@ -127,7 +126,7 @@
 
 ---
 
-### ⏰ Schedules — `/api/schedules/`
+### Schedules — `/api/schedules/`
 
 #### GET `/api/schedules`
 - **Auth:** Yes
@@ -144,7 +143,7 @@
 
 ---
 
-### 🔍 QIDs — `/api/qids/`
+### QIDs — `/api/qids/`
 
 #### GET `/api/qids`
 - **Auth:** Yes
@@ -160,15 +159,16 @@
 - **Auth:** Yes
 - **Response (200):** Full QID object with cves, bugtraqs, vendor_refs, supported_modules arrays
 
-#### POST `/api/qids/export-details`
+#### GET `/api/qids/export-details`
 - **Auth:** Yes
-- **Request body:** `{ "ids": [1234, 5678], "format": "csv"|"pdf" }`
-- **Response (200):** CSV or PDF file with full QID details (severity, CVEs, bugtraqs, modules, diagnosis, solution)
-- **Errors:** `400` empty IDs, over 200 limit, or invalid IDs
+- **Query params:** `ids` (comma-separated QID numbers), `format` (csv only)
+- **Response (200):** CSV file with full QID details (severity, CVEs, bugtraqs, modules, diagnosis, solution)
+- **Errors:** `400` empty or invalid IDs
+- **Notes:** No item limit. HTML stripped from text fields, URLs preserved.
 
 ---
 
-### 🔍 CIDs — `/api/cids/`
+### CIDs — `/api/cids/`
 
 #### GET `/api/cids`
 - **Auth:** Yes
@@ -184,15 +184,16 @@
 - **Auth:** Yes
 - **Response (200):** Full CID object with technologies array and linked policies
 
-#### POST `/api/cids/export-details`
+#### GET `/api/cids/export-details`
 - **Auth:** Yes
-- **Request body:** `{ "ids": [1234, 5678], "format": "csv"|"pdf" }`
-- **Response (200):** CSV or PDF file with full CID details (criticality, statement, technologies, linked policies)
-- **Errors:** `400` empty IDs, over 200 limit, or invalid IDs
+- **Query params:** `ids` (comma-separated CID numbers), `format` (csv only)
+- **Response (200):** CSV file with full CID details (criticality, statement, technologies, linked policies)
+- **Errors:** `400` empty or invalid IDs
+- **Notes:** No item limit.
 
 ---
 
-### 📋 Policies — `/api/policies/`
+### Policies — `/api/policies/`
 
 #### GET `/api/policies`
 - **Auth:** Yes
@@ -222,7 +223,7 @@
 
 ---
 
-### 📜 Mandates — `/api/mandates/`
+### Mandates — `/api/mandates/`
 
 #### GET `/api/mandates`
 - **Auth:** Yes
@@ -235,7 +236,7 @@
 
 ---
 
-### 📊 Dashboard — `/api/dashboard/`
+### Dashboard — `/api/dashboard/`
 
 #### GET `/api/dashboard/stats`
 - **Auth:** Yes
@@ -243,23 +244,32 @@
 
 ---
 
-### 📥 Export — `/api/export/`
+### Export — `/api/export/`
 
 All export endpoints accept the same filter params as their corresponding search endpoints.
 
 | Endpoint | Format | Filename |
 |----------|--------|----------|
 | GET `/api/export/qids/csv` | CSV | qkbe-qids-export.csv |
-| GET `/api/export/qids/pdf` | PDF | qkbe-qids-export.pdf |
 | GET `/api/export/cids/csv` | CSV | qkbe-cids-export.csv |
-| GET `/api/export/cids/pdf` | PDF | qkbe-cids-export.pdf |
 | GET `/api/export/policies/csv` | CSV | qkbe-policies-export.csv |
 | GET `/api/export/policies/pdf` | PDF | qkbe-policies-export.pdf |
 | GET `/api/export/mandates/csv` | CSV | qkbe-mandates-export.csv |
 | GET `/api/export/mandates/pdf` | PDF | qkbe-mandates-export.pdf |
 | GET `/api/export/mandate-map/csv` | CSV | qkbe-mandate-mapping.csv |
 
+**Note:** PDF export is available for Policies and Mandates only. QID and CID content fields are too large for reliable PDF generation.
+
 ---
+
+## CSRF Protection
+
+All state-changing requests (POST, PATCH, DELETE) require the header:
+```
+X-Requested-With: QKBE
+```
+
+Requests without this header receive `403 Forbidden`.
 
 ## Error Response Format
 
@@ -269,12 +279,13 @@ All endpoints return errors as JSON:
 { "error": "Description of what went wrong" }
 ```
 
-HTTP status codes: `400` (bad request), `401` (unauthorized), `404` (not found), `500` (server error)
+HTTP status codes: `400` (bad request), `401` (unauthorized), `403` (forbidden/CSRF), `404` (not found), `429` (rate limited), `500` (server error)
 
 ## Authentication
 
 1. First-time users: All routes accessible (vault is empty)
 2. After vault has credentials: All `/api/*` routes require the `qkbe-vault-unlocked` cookie
-3. Cookie is set after successful `POST /api/credentials/verify`
+3. Cookie is set (HttpOnly, server-side) after successful `POST /api/credentials/verify`
 4. Cookie is cleared on `POST /api/auth/logout`
-5. Exempt paths: `/api/credentials` (GET/POST), `/api/credentials/verify`, `/api/platforms`, `/api/auth/logout`
+5. Cookie `secure` flag auto-enabled when TLS certificates detected in `/app/certs/`
+6. Exempt paths: `/api/credentials` (GET/POST), `/api/credentials/verify`, `/api/platforms`, `/api/auth/logout`

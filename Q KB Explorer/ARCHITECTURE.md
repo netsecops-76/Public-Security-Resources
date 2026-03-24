@@ -18,28 +18,30 @@ Q KB Explorer is a local caching and exploration tool for the Qualys Knowledge B
 | Scheduler    | APScheduler              | 3.10.4   |
 | HTTP Client  | requests + xmltodict     | 2.32.4   |
 | PDF Reports  | reportlab                | 4.4.0    |
+| HTML Sanitizer | bleach                 | 6.3.0    |
+| Rate Limiter | flask-limiter            | 4.1.1    |
 | WSGI Server  | Gunicorn                 | 23.0.0   |
 | Container    | Docker (python:3.12-slim)| 3.12     |
 
 ## Architecture Diagram
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    Browser (SPA)                         │
-│  ┌──────┐ ┌──────┐ ┌──────┐ ┌────────┐ ┌────────┐ ┌──┐┌──┐│
-│  │Dashbd│ │ QIDs │ │ CIDs │ │Policies│ │Mandates│ │⚙️││ ? ││
-│  └──────┘ └──────┘ └──────┘ └────────┘ └────────┘ └──┘└──┘│
-│   app.js (3,389 LOC) · Chart.js · style.css        └──┘│
-└──────────────────────┬──────────────────────────────────┘
-                       │ HTTP (JSON)
-┌──────────────────────▼──────────────────────────────────┐
-│                Flask Application (main.py)               │
-│  ┌─────────────┐  ┌──────────┐  ┌───────────────────┐  │
-│  │ Auth Gate    │  │ 47 API   │  │ CSV/PDF Export    │  │
-│  │ (vault      │  │ Routes   │  │ (reportlab)       │  │
-│  │  cookies)   │  │          │  │                   │  │
-│  └─────────────┘  └──────────┘  └───────────────────┘  │
-└────────┬──────────────┬──────────────────┬──────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                       Browser (SPA)                           │
+│  ┌──────┐ ┌──────┐ ┌──────┐ ┌────────┐ ┌────────┐ ┌──┐┌──┐ │
+│  │Dashbd│ │ QIDs │ │ CIDs │ │Policies│ │Mandates│ │⚙️││ ? │ │
+│  └──────┘ └──────┘ └──────┘ └────────┘ └────────┘ └──┘└──┘ │
+│   app.js (3,713 LOC) · Chart.js · style.css (1,155 LOC)     │
+└──────────────────────────┬───────────────────────────────────┘
+                           │ HTTP (JSON)
+┌──────────────────────────▼───────────────────────────────────┐
+│                 Flask Application (main.py)                    │
+│  ┌─────────────┐  ┌──────────┐  ┌───────────────────┐       │
+│  │ Auth Gate    │  │ 49 API   │  │ CSV/PDF Export    │       │
+│  │ (HttpOnly    │  │ Routes   │  │ (reportlab)       │       │
+│  │  cookies)   │  │ + CSRF   │  │                   │       │
+│  └─────────────┘  └──────────┘  └───────────────────┘       │
+└────────┬──────────────┬──────────────────┬───────────────────┘
          │              │                  │
 ┌────────▼────┐  ┌──────▼──────┐  ┌───────▼────────────┐
 │ Vault       │  │ Database    │  │ Sync Engine        │
@@ -68,16 +70,16 @@ Q KB Explorer is a local caching and exploration tool for the Qualys Knowledge B
 
 | Module            | Responsibility                                        | File               | LOC   |
 |-------------------|-------------------------------------------------------|---------------------|-------|
-| Routes            | HTTP endpoints, request validation, auth gate         | app/main.py         | 1,680 |
-| Database          | Schema, CRUD, FTS5 search, filter queries, migrations | app/database.py     | 2,211 |
+| Routes            | HTTP endpoints, request validation, auth gate, CSRF   | app/main.py         | 1,739 |
+| Database          | Schema, CRUD, FTS5 search, filter queries, migrations | app/database.py     | 2,229 |
 | Sync Engine       | Full/delta sync, chunking, watermarks, progress       | app/sync.py         | 449   |
 | Sync Log          | Event-level sync diagnostics, SQLite persistence      | app/sync_log.py     | 380   |
 | Qualys Client     | HTTP client, XML parsing, platform registry           | app/qualys_client.py| 365   |
 | Scheduler         | APScheduler background jobs, recurring syncs          | app/scheduler.py    | 335   |
 | Vault             | AES-256-GCM encryption, credential CRUD               | app/vault.py        | 255   |
-| Frontend App      | SPA logic, search, filters, modals, charts            | app/static/js/app.js| 3,389 |
-| Styles            | Dark/light themes, cards, badges, layout              | app/static/css/style.css | 1,091 |
-| Template          | Single-page HTML with 6 tabs                          | app/templates/index.html | 956 |
+| Frontend App      | SPA logic, shortcuts, bookmarks, search history       | app/static/js/app.js| 3,713 |
+| Styles            | Dark/light themes, cards, badges, layout              | app/static/css/style.css | 1,155 |
+| Template          | Single-page HTML with 7 tabs, modals, help content    | app/templates/index.html | 1,119 |
 
 ## Data Flow
 
@@ -96,6 +98,15 @@ User types query → app.js _qidSearchParams() → GET /api/qids?q=...
   → main.py _parse_qid_filters() → database.py search_vulns()
   → FTS5 MATCH + SQL WHERE conditions → paginated results
   → JSON response → app.js renderQidResults() → DOM update
+```
+
+### Bulk Export Flow
+```
+User enters select mode → checkboxes appear on cards
+  → selects items → clicks Export CSV
+  → GET /api/qids/export-details?ids=1,2,3&format=csv
+  → main.py fetches full detail for each ID → CSV response
+  → browser downloads file
 ```
 
 ### Policy Migration Flow
@@ -156,17 +167,23 @@ Import: POST /api/policies/upload → read stored XML
 │  /data/ (700) ─── vault.json   │  ← Separate volume
 │                    qkbe.db      │
 │                                 │
-│  Auth Gate ────── Cookie check  │
+│  Auth Gate ────── HttpOnly cookie│
+│  CSRF ─────────── X-Requested-With│
+│  Rate Limit ───── 5/min verify  │
 │  Vault ────────── AES-256-GCM  │
 │  Passwords ────── compare_digest│
+│  Sanitization ─── bleach       │
 │  Optional TLS ── /app/certs/   │
 └─────────────────────────────────┘
 ```
 
 - **Defense-in-depth:** Encryption key and encrypted data on separate Docker volumes
-- **Auth gate:** All API routes require vault unlock cookie (except credential management)
+- **Auth gate:** All API routes require HttpOnly vault unlock cookie (except credential management)
+- **CSRF protection:** `X-Requested-With: QKBE` header required on POST/PATCH/DELETE
+- **Rate limiting:** 5 requests/minute on `/api/credentials/verify`
+- **HTML sanitization:** bleach strips dangerous tags from QID content fields
 - **Password comparison:** `secrets.compare_digest()` prevents timing attacks
-- **TLS:** Auto-detected from `/app/certs/` directory (cert.pem + key.pem)
+- **TLS:** Auto-detected from `/app/certs/` directory (cert.pem + key.pem); sets `secure=True` on cookie
 
 ## External Dependencies
 
@@ -176,3 +193,5 @@ Import: POST /api/policies/upload → read stored XML
 | SQLite         | Local data store           | Low        | Built into Python, no server   |
 | Chart.js       | Dashboard visualizations   | Low        | Bundled, no CDN dependency     |
 | reportlab      | PDF report generation      | Low        | Pure Python, no system deps    |
+| bleach         | HTML sanitization          | Low        | Well-maintained, no native deps|
+| flask-limiter  | Rate limiting              | Low        | In-memory storage (single worker) |

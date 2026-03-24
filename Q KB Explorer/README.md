@@ -13,7 +13,7 @@ Qualys Knowledge Base and Policy Compliance explorer with local caching, full-te
 - Severity color-coded cards (Critical=red, High=orange, Medium=yellow, Low=blue, Info=gray)
 - Supported modules (agent type) display, filtering, and badges on cards
 - Dynamic record count badge: Total | Found | % updates after each search
-- Bulk export of full QID details (including CVEs, diagnosis, solution) as CSV/PDF
+- Bulk export of full QID details (including CVEs, diagnosis, solution) as CSV
 
 ### Compliance Controls (CIDs)
 - Full and delta sync of compliance controls (26K+ CIDs)
@@ -21,7 +21,7 @@ Qualys Knowledge Base and Policy Compliance explorer with local caching, full-te
 - Multi-select filters: Category, Technology (type-ahead), Criticality
 - Detail view with check type, technologies with rationale, and linked policies
 - Cross-navigation: click a linked policy to jump to the Policies tab
-- Bulk export of full CID details as CSV/PDF
+- Bulk export of full CID details as CSV
 
 ### Policy Compliance
 - Full and delta sync of compliance policies
