@@ -4,7 +4,7 @@
  Qualys Cloud Agent Troubleshooting Script for Linux
 ===============================================================================
  Version:    1.6.0
- Author:     Brian Canaday — brian.canaday@nttdata.com
+ Author:     Brian Canaday -- netsecops@gmail.com
  Platform:   RHEL / CentOS / Amazon Linux (Python 3.6+)
 
  Purpose:
