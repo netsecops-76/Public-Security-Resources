@@ -119,6 +119,7 @@ Or set `QKBE_TLS_CERT` and `QKBE_TLS_KEY` environment variables.
 
 ## Documentation
 
+- [UPDATING.md](UPDATING.md) -- How to pull updates and keep your instance current
 - [API_REFERENCE.md](API_REFERENCE.md) -- Full endpoint catalog
 - [ARCHITECTURE.md](ARCHITECTURE.md) -- System design and data flow
 - [CHANGELOG.md](CHANGELOG.md) -- Version history
