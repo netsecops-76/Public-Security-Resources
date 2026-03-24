@@ -1,0 +1,16 @@
+version: 2
+updates:
+  # GitHub Actions — always included per policy
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    commit-message:
+      prefix: "ci"
+    assignees: ["netsecops-76"]
+    labels: ["dependencies"]
+    open-pull-requests-limit: 3
+    groups:
+      github-actions:
+        patterns: ["*"]
