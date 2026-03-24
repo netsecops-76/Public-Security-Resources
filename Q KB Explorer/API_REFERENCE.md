@@ -1,6 +1,6 @@
 # Q KB Explorer — API Reference
 
-> Total endpoints: 46 | Base URL: `/api`
+> Total endpoints: 48 | Base URL: `/api`
 > Auth: Vault-based session cookie (`qkbe-vault-unlocked`)
 
 ## Quick Reference Table
@@ -27,9 +27,11 @@
 | GET | `/api/qids` | Search QIDs (FTS + filters + pagination) | Yes |
 | GET | `/api/qids/filter-values` | Distinct filter values for dropdowns | Yes |
 | GET | `/api/qids/<qid>` | Full QID detail | Yes |
+| POST | `/api/qids/export-details` | Bulk export full QID details (limit 200) | Yes |
 | GET | `/api/cids` | Search CIDs (FTS + filters + pagination) | Yes |
 | GET | `/api/cids/filter-values` | Distinct filter values for dropdowns | Yes |
 | GET | `/api/cids/<cid>` | Full CID detail with technologies | Yes |
+| POST | `/api/cids/export-details` | Bulk export full CID details (limit 200) | Yes |
 | GET | `/api/policies` | Search policies (filters + pagination) | Yes |
 | DELETE | `/api/policies` | Delete policies by ID | Yes |
 | GET | `/api/policies/filter-values` | Distinct filter values for dropdowns | Yes |
@@ -158,6 +160,12 @@
 - **Auth:** Yes
 - **Response (200):** Full QID object with cves, bugtraqs, vendor_refs, supported_modules arrays
 
+#### POST `/api/qids/export-details`
+- **Auth:** Yes
+- **Request body:** `{ "ids": [1234, 5678], "format": "csv"|"pdf" }`
+- **Response (200):** CSV or PDF file with full QID details (severity, CVEs, bugtraqs, modules, diagnosis, solution)
+- **Errors:** `400` empty IDs, over 200 limit, or invalid IDs
+
 ---
 
 ### 🔍 CIDs — `/api/cids/`
@@ -175,6 +183,12 @@
 #### GET `/api/cids/<cid>`
 - **Auth:** Yes
 - **Response (200):** Full CID object with technologies array and linked policies
+
+#### POST `/api/cids/export-details`
+- **Auth:** Yes
+- **Request body:** `{ "ids": [1234, 5678], "format": "csv"|"pdf" }`
+- **Response (200):** CSV or PDF file with full CID details (criticality, statement, technologies, linked policies)
+- **Errors:** `400` empty IDs, over 200 limit, or invalid IDs
 
 ---
 

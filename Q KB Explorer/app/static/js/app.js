@@ -115,7 +115,7 @@ async function apiFetch(url, options = {}) {
 let _totalCounts = { qids: 0, cids: 0, policies: 0, mandates: 0 };
 
 // ── Track whether each tab has auto-loaded its first page ───────────────
-let _tabLoaded = { dashboard: false, qids: false, cids: false, policies: false, mandates: false };
+let _tabLoaded = { dashboard: false, qids: false, cids: false, policies: false, mandates: false, help: false };
 
 // ── In-flight request abort controllers for type-ahead ──────────────────
 const _searchAbort = { qids: null, cids: null, policies: null, mandates: null };
@@ -126,6 +126,185 @@ let _charts = { severity: null, criticality: null, categories: null };
 // ── Modal stack for z-index management ──────────────────────────────────
 let _modalStack = [];
 const _MODAL_BASE_Z = 9999;
+
+// ── Keyboard Shortcuts map ──────────────────────────────────────────────
+const _TAB_NAMES = ["dashboard", "qids", "cids", "policies", "mandates", "settings", "help"];
+const _SEARCH_INPUTS = {
+    qids: "qidSearchInput", cids: "cidSearchInput",
+    policies: "policySearchInput", mandates: "mandateSearchInput",
+};
+const _SHORTCUTS = {
+    "1": { action: () => switchTab("dashboard"), desc: "Dashboard tab" },
+    "2": { action: () => switchTab("qids"), desc: "QIDs tab" },
+    "3": { action: () => switchTab("cids"), desc: "CIDs tab" },
+    "4": { action: () => switchTab("policies"), desc: "Policies tab" },
+    "5": { action: () => switchTab("mandates"), desc: "Mandates tab" },
+    "6": { action: () => switchTab("settings"), desc: "Settings tab" },
+    "7": { action: () => switchTab("help"), desc: "Help tab" },
+    "/": { action: () => _focusCurrentSearch(), desc: "Focus search input" },
+    "?": { action: () => _showShortcutsModal(), desc: "Show shortcuts" },
+    "t": { action: () => toggleTheme(), desc: "Toggle theme" },
+    "b": { action: () => _toggleCurrentBookmark(), desc: "Toggle bookmark" },
+};
+
+function _focusCurrentSearch() {
+    const active = document.querySelector(".tab-btn.active");
+    const tab = active ? active.dataset.tab : "";
+    const inputId = _SEARCH_INPUTS[tab];
+    if (inputId) {
+        const el = document.getElementById(inputId);
+        if (el) el.focus();
+    }
+}
+
+function _showShortcutsModal() {
+    const content = document.getElementById("shortcutsContent");
+    if (content) {
+        content.innerHTML = '<table class="shortcuts-table">' +
+            Object.entries(_SHORTCUTS).map(([key, s]) =>
+                `<tr><td><kbd class="kbd">${escapeHtml(key)}</kbd></td><td>${escapeHtml(s.desc)}</td></tr>`
+            ).join("") + '</table>';
+    }
+    openModal("shortcutsModal");
+}
+
+// ── Bookmarks (localStorage) ────────────────────────────────────────────
+const _BOOKMARKS_KEY = "qkbe_bookmarks";
+const _BOOKMARKS_MAX = 500;
+
+function _getBookmarks() {
+    try { return JSON.parse(localStorage.getItem(_BOOKMARKS_KEY) || "{}"); }
+    catch { return {}; }
+}
+function _saveBookmarks(bm) { localStorage.setItem(_BOOKMARKS_KEY, JSON.stringify(bm)); }
+
+function isBookmarked(type, id) {
+    return (type + ":" + id) in _getBookmarks();
+}
+
+function toggleBookmark(type, id, title, event) {
+    if (event) event.stopPropagation();
+    const bm = _getBookmarks();
+    const key = type + ":" + id;
+    if (bm[key]) {
+        delete bm[key];
+        _saveBookmarks(bm);
+        showToast("Bookmark removed", "info");
+    } else {
+        if (Object.keys(bm).length >= _BOOKMARKS_MAX) {
+            showToast("Bookmark limit reached (" + _BOOKMARKS_MAX + ")", "error");
+            return;
+        }
+        bm[key] = { title: title || "", savedAt: new Date().toISOString() };
+        _saveBookmarks(bm);
+        showToast("Bookmarked", "success");
+    }
+    _refreshBookmarkStars();
+}
+
+function _toggleCurrentBookmark() {
+    const modals = [
+        { id: "qidDetailModal", type: "qid", titleEl: "qidDetailTitle" },
+        { id: "cidDetailModal", type: "cid", titleEl: "cidDetailTitle" },
+        { id: "policyDetailModal", type: "policy", titleEl: "policyDetailTitle" },
+    ];
+    for (const m of modals) {
+        const el = document.getElementById(m.id);
+        if (el && el.style.display !== "none") {
+            const titleText = document.getElementById(m.titleEl)?.textContent || "";
+            const idMatch = titleText.match(/\d+/);
+            if (idMatch) toggleBookmark(m.type, parseInt(idMatch[0]), titleText);
+            return;
+        }
+    }
+}
+
+function _refreshBookmarkStars() {
+    document.querySelectorAll(".bookmark-star").forEach(star => {
+        const type = star.dataset.bmType;
+        const id = star.dataset.bmId;
+        if (isBookmarked(type, id)) {
+            star.classList.add("bookmarked");
+            star.title = "Remove bookmark";
+        } else {
+            star.classList.remove("bookmarked");
+            star.title = "Bookmark";
+        }
+    });
+}
+
+function _starHtml(type, id, title) {
+    const filled = isBookmarked(type, id);
+    const safeTitle = escapeHtml((title || "").replace(/'/g, ""));
+    return `<span class="bookmark-star${filled ? " bookmarked" : ""}" data-bm-type="${type}" data-bm-id="${id}" onclick="toggleBookmark('${type}',${id},'${safeTitle}',event)" title="${filled ? "Remove bookmark" : "Bookmark"}">` +
+        '<svg width="16" height="16" viewBox="0 0 24 24" fill="' + (filled ? "currentColor" : "none") + '" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg></span>';
+}
+
+// ── Recent Searches (localStorage) ──────────────────────────────────────
+const _RECENT_KEY = "qkbe_recent_searches";
+const _RECENT_MAX = 20;
+
+function _getRecentSearches() {
+    try { return JSON.parse(localStorage.getItem(_RECENT_KEY) || "[]"); }
+    catch { return []; }
+}
+
+function _saveRecentSearch(type, query, resultCount) {
+    if (!query && !resultCount) return;
+    const recent = _getRecentSearches();
+    const filtered = recent.filter(r => !(r.type === type && r.query === query));
+    filtered.unshift({ type, query: query || "", resultCount: resultCount || 0, timestamp: new Date().toISOString() });
+    if (filtered.length > _RECENT_MAX) filtered.length = _RECENT_MAX;
+    localStorage.setItem(_RECENT_KEY, JSON.stringify(filtered));
+}
+
+function clearRecentSearches(type) {
+    if (type) {
+        const recent = _getRecentSearches().filter(r => r.type !== type);
+        localStorage.setItem(_RECENT_KEY, JSON.stringify(recent));
+    } else {
+        localStorage.removeItem(_RECENT_KEY);
+    }
+    _closeAllRecentDropdowns();
+    showToast("Search history cleared", "info");
+}
+
+function toggleRecentDropdown(type) {
+    const dd = document.getElementById(type + "RecentDropdown");
+    if (!dd) return;
+    if (dd.style.display !== "none") { dd.style.display = "none"; return; }
+    _closeAllRecentDropdowns();
+    const recent = _getRecentSearches().filter(r => r.type === type);
+    if (recent.length === 0) {
+        dd.innerHTML = '<div class="recent-item recent-empty">No recent searches</div>';
+    } else {
+        dd.innerHTML = recent.map((r, i) =>
+            `<div class="recent-item" onclick="restoreSearch('${type}',${i})">` +
+            `<span class="recent-query">${escapeHtml(r.query || "(all)")}</span>` +
+            `<span class="recent-meta">${r.resultCount.toLocaleString()} results &middot; ${_timeAgo(new Date(r.timestamp))}</span>` +
+            `</div>`
+        ).join("") +
+        `<div class="recent-item recent-clear" onclick="clearRecentSearches('${type}')">Clear history</div>`;
+    }
+    dd.style.display = "block";
+}
+
+function _closeAllRecentDropdowns() {
+    document.querySelectorAll(".recent-dropdown").forEach(d => d.style.display = "none");
+}
+
+function restoreSearch(type, index) {
+    const recent = _getRecentSearches().filter(r => r.type === type);
+    const entry = recent[index];
+    if (!entry) return;
+    _closeAllRecentDropdowns();
+    const inputId = _SEARCH_INPUTS[type];
+    if (inputId) document.getElementById(inputId).value = entry.query || "";
+    if (type === "qids") searchQids();
+    else if (type === "cids") searchCids();
+    else if (type === "policies") searchPolicies();
+    else if (type === "mandates") searchMandates();
+}
 
 function openModal(id) {
     const el = document.getElementById(id);
@@ -1563,6 +1742,7 @@ async function searchQids(signal) {
         const data = await resp.json();
         if (data.error) { showToast(data.error, "error"); return; }
         renderQidResults(data);
+        _saveRecentSearch("qids", document.getElementById("qidSearchInput").value.trim(), data.total || 0);
     } catch (e) {
         if (e.name === "AbortError") return;
         showToast("Search failed: " + e.message, "error");
@@ -1581,6 +1761,7 @@ function renderQidResults(data) {
     }
     container.innerHTML = items.map(v => `
         <div class="qid-card" onclick="showQidDetail(${v.qid})">
+            ${_starHtml("qid", v.qid, v.title)}
             <div class="qid-card-severity severity-${v.severity_level || 1}">${v.severity_level || "?"}</div>
             <div class="qid-card-body">
                 <div class="qid-card-title">
@@ -1681,6 +1862,7 @@ async function searchCids(signal) {
         const data = await resp.json();
         if (data.error) { showToast(data.error, "error"); return; }
         renderCidResults(data);
+        _saveRecentSearch("cids", document.getElementById("cidSearchInput").value.trim(), data.total || 0);
     } catch (e) {
         if (e.name === "AbortError") return;
         showToast("Search failed: " + e.message, "error");
@@ -1699,6 +1881,7 @@ function renderCidResults(data) {
     }
     container.innerHTML = items.map(c => `
         <div class="cid-card" onclick="showCidDetail(${c.cid})">
+            ${_starHtml("cid", c.cid, c.category)}
             <div class="cid-card-criticality criticality-${(c.criticality_label || "minimal").toLowerCase()}">${escapeHtml(decodeHtmlEntities(c.criticality_label || "?"))}</div>
             <div class="cid-card-body">
                 <div class="cid-card-title">
@@ -1819,6 +2002,7 @@ async function searchPolicies(signal) {
         const data = await resp.json();
         if (data.error) { showToast(data.error, "error"); return; }
         renderPolicyResults(data);
+        _saveRecentSearch("policies", document.getElementById("policySearchInput").value.trim(), data.total || 0);
     } catch (e) {
         if (e.name === "AbortError") return;
         showToast("Search failed: " + e.message, "error");
@@ -1888,6 +2072,7 @@ async function searchMandates(signal) {
         const data = await resp.json();
         if (data.error) { showToast(data.error, "error"); return; }
         renderMandateResults(data);
+        _saveRecentSearch("mandates", document.getElementById("mandateSearchInput").value.trim(), data.total || 0);
     } catch (e) {
         if (e.name === "AbortError") return;
         showToast("Search failed: " + e.message, "error");
@@ -2042,6 +2227,7 @@ function renderPolicyResults(data) {
     }
     container.innerHTML = items.map(p => `
         <div class="policy-card" onclick="showPolicyDetail(${p.policy_id})">
+            ${_starHtml("policy", p.policy_id, p.title)}
             <div class="policy-card-body">
                 <div class="policy-card-title">
                     <span class="policy-id">#${p.policy_id}</span>${escapeHtml(p.title || "")}
@@ -2149,6 +2335,132 @@ async function deleteSinglePolicy() {
     } catch (e) {
         showToast("Delete failed: " + e.message, "error");
     }
+}
+
+// ─── QID Select / Bulk Export Mode ───────────────────────────────────────
+let _qidSelectMode = false;
+
+function enterQidSelectMode() {
+    _qidSelectMode = true;
+    document.getElementById("qidSelectBar").style.display = "flex";
+    document.getElementById("qidSelectBtn").style.display = "none";
+    document.getElementById("qidSelectAll").checked = false;
+    _updateQidSelectedCount();
+    document.querySelectorAll("#qidResults .qid-card").forEach(card => {
+        const m = card.getAttribute("onclick")?.match(/showQidDetail\((\d+)\)/);
+        if (!m) return;
+        card.removeAttribute("onclick");
+        card.style.cursor = "default";
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.className = "qid-select-cb";
+        cb.dataset.qid = m[1];
+        cb.addEventListener("change", _updateQidSelectedCount);
+        cb.addEventListener("click", e => e.stopPropagation());
+        card.insertBefore(cb, card.firstChild);
+        card.addEventListener("click", () => { cb.checked = !cb.checked; _updateQidSelectedCount(); });
+    });
+}
+
+function exitQidSelectMode() {
+    _qidSelectMode = false;
+    document.getElementById("qidSelectBar").style.display = "none";
+    document.getElementById("qidSelectBtn").style.display = "";
+    searchQids();
+}
+
+function toggleAllQids(checked) {
+    document.querySelectorAll("#qidResults .qid-select-cb").forEach(cb => cb.checked = checked);
+    _updateQidSelectedCount();
+}
+
+function _updateQidSelectedCount() {
+    const count = document.querySelectorAll("#qidResults .qid-select-cb:checked").length;
+    document.getElementById("qidSelectedCount").textContent = count + " selected";
+}
+
+async function exportSelectedQids(format) {
+    const ids = Array.from(document.querySelectorAll("#qidResults .qid-select-cb:checked")).map(cb => parseInt(cb.dataset.qid));
+    if (ids.length === 0) { showToast("No QIDs selected", "info"); return; }
+    try {
+        showLoading("Exporting " + ids.length + " QIDs...");
+        const resp = await apiFetch("/api/qids/export-details", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ids, format }),
+        });
+        if (!resp.ok) { const e = await resp.json(); showToast(e.error || "Export failed", "error"); hideLoading(); return; }
+        const blob = await resp.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url; a.download = "qkbe-qid-details." + format; a.click();
+        URL.revokeObjectURL(url);
+        hideLoading();
+        showToast("Exported " + ids.length + " QIDs", "success");
+    } catch (e) { hideLoading(); showToast("Export failed: " + e.message, "error"); }
+}
+
+// ─── CID Select / Bulk Export Mode ───────────────────────────────────────
+let _cidSelectMode = false;
+
+function enterCidSelectMode() {
+    _cidSelectMode = true;
+    document.getElementById("cidSelectBar").style.display = "flex";
+    document.getElementById("cidSelectBtn").style.display = "none";
+    document.getElementById("cidSelectAll").checked = false;
+    _updateCidSelectedCount();
+    document.querySelectorAll("#cidResults .cid-card").forEach(card => {
+        const m = card.getAttribute("onclick")?.match(/showCidDetail\((\d+)\)/);
+        if (!m) return;
+        card.removeAttribute("onclick");
+        card.style.cursor = "default";
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.className = "cid-select-cb";
+        cb.dataset.cid = m[1];
+        cb.addEventListener("change", _updateCidSelectedCount);
+        cb.addEventListener("click", e => e.stopPropagation());
+        card.insertBefore(cb, card.firstChild);
+        card.addEventListener("click", () => { cb.checked = !cb.checked; _updateCidSelectedCount(); });
+    });
+}
+
+function exitCidSelectMode() {
+    _cidSelectMode = false;
+    document.getElementById("cidSelectBar").style.display = "none";
+    document.getElementById("cidSelectBtn").style.display = "";
+    searchCids();
+}
+
+function toggleAllCids(checked) {
+    document.querySelectorAll("#cidResults .cid-select-cb").forEach(cb => cb.checked = checked);
+    _updateCidSelectedCount();
+}
+
+function _updateCidSelectedCount() {
+    const count = document.querySelectorAll("#cidResults .cid-select-cb:checked").length;
+    document.getElementById("cidSelectedCount").textContent = count + " selected";
+}
+
+async function exportSelectedCids(format) {
+    const ids = Array.from(document.querySelectorAll("#cidResults .cid-select-cb:checked")).map(cb => parseInt(cb.dataset.cid));
+    if (ids.length === 0) { showToast("No CIDs selected", "info"); return; }
+    try {
+        showLoading("Exporting " + ids.length + " CIDs...");
+        const resp = await apiFetch("/api/cids/export-details", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ids, format }),
+        });
+        if (!resp.ok) { const e = await resp.json(); showToast(e.error || "Export failed", "error"); hideLoading(); return; }
+        const blob = await resp.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url; a.download = "qkbe-cid-details." + format; a.click();
+        URL.revokeObjectURL(url);
+        hideLoading();
+        showToast("Exported " + ids.length + " CIDs", "success");
+    } catch (e) { hideLoading(); showToast("Export failed: " + e.message, "error"); }
 }
 
 function _criticalityColor(label) {
@@ -2840,9 +3152,19 @@ async function searchPoliciesPage(page) {
     } catch (e) { showToast("Search failed", "error"); }
 }
 
-// ─── Help Modal ─────────────────────────────────────────────────────────
+// ─── Help ─────────────────────────────────────────────────────────────
 function showHelpModal() {
-    openModal("helpModal");
+    switchTab("help");
+    // Populate shortcuts table on first visit
+    if (!_tabLoaded.help) {
+        _tabLoaded.help = true;
+        const el = document.getElementById("helpShortcutsBody");
+        if (el) {
+            el.innerHTML = Object.entries(_SHORTCUTS).map(([key, s]) =>
+                `<tr><td><kbd class="kbd">${escapeHtml(key)}</kbd></td><td>${escapeHtml(s.desc)}</td></tr>`
+            ).join("");
+        }
+    }
 }
 
 // ─── Utilities ──────────────────────────────────────────────────────────
@@ -3065,10 +3387,27 @@ function updateScheduleBadges(schedules) {
     });
 }
 
-// ─── Close modals on Escape ─────────────────────────────────────────────
+// ─── Global Keyboard Shortcuts ──────────────────────────────────────────
 document.addEventListener("keydown", (e) => {
+    const tag = (e.target.tagName || "").toLowerCase();
+    const isInput = tag === "input" || tag === "textarea" || tag === "select" || e.target.isContentEditable;
+    // Escape always works (close modal or exit select mode)
     if (e.key === "Escape") {
-        closeTopModal();
+        _closeAllRecentDropdowns();
+        if (_modalStack.length) { closeTopModal(); return; }
+        if (_qidSelectMode) { exitQidSelectMode(); return; }
+        if (_cidSelectMode) { exitCidSelectMode(); return; }
+        if (_policySelectMode) { exitPolicySelectMode(); return; }
+        return;
+    }
+    // Skip shortcuts when typing in inputs
+    if (isInput) return;
+    // Close recent dropdowns on any key press
+    _closeAllRecentDropdowns();
+    const shortcut = _SHORTCUTS[e.key];
+    if (shortcut) {
+        e.preventDefault();
+        shortcut.action();
     }
 });
 

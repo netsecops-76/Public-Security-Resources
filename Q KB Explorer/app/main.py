@@ -579,6 +579,51 @@ def qids_detail(qid):
         return jsonify({"error": "Internal server error"}), 500
 
 
+@app.route("/api/qids/export-details", methods=["POST"])
+def qids_export_details():
+    """Bulk export full QID details (CVEs, diagnosis, solution, etc.)."""
+    try:
+        data = request.json or {}
+        ids = data.get("ids", [])
+        fmt = data.get("format", "csv")
+        if not ids:
+            return jsonify({"error": "No QIDs provided"}), 400
+        if len(ids) > 200:
+            return jsonify({"error": "Maximum 200 QIDs per export"}), 400
+        try:
+            ids = [int(i) for i in ids]
+        except (ValueError, TypeError):
+            return jsonify({"error": "Invalid QID ID"}), 400
+
+        headers = ["QID", "Title", "Severity", "Category", "Type", "Patchable",
+                    "CVSS v2", "CVSS v3", "Published", "Modified", "CVEs",
+                    "Bugtraqs", "Supported Modules", "Diagnosis", "Solution"]
+        rows = []
+        for qid in ids:
+            v = get_vuln(qid)
+            if not v:
+                continue
+            cves = ", ".join(c.get("cve_id", "") for c in (v.get("cves") or []))
+            bugtraqs = ", ".join(str(b.get("bugtraq_id", "")) for b in (v.get("bugtraqs") or []))
+            mods = ", ".join(v.get("supported_modules") or [])
+            rows.append([
+                v.get("qid"), v.get("title"), v.get("severity_level"),
+                v.get("category"), v.get("vuln_type"),
+                "Yes" if v.get("patchable") else "No",
+                v.get("cvss_base"), v.get("cvss3_base"),
+                v.get("published_datetime", ""), v.get("last_service_modification_datetime", ""),
+                cves, bugtraqs, mods,
+                (v.get("diagnosis") or "")[:500], (v.get("solution") or "")[:500],
+            ])
+
+        if fmt == "pdf":
+            return _pdf_response("QID Detail Export", headers, rows, "qkbe-qid-details.pdf")
+        return _csv_response(rows, headers, "qkbe-qid-details.csv")
+    except Exception:
+        logger.exception("Request failed: %s %s", request.method, request.path)
+        return jsonify({"error": "Internal server error"}), 500
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Routes — CIDs (Compliance Controls)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -634,6 +679,47 @@ def cids_detail(cid):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+@app.route("/api/cids/export-details", methods=["POST"])
+def cids_export_details():
+    """Bulk export full CID details (technologies, linked policies, etc.)."""
+    try:
+        data = request.json or {}
+        ids = data.get("ids", [])
+        fmt = data.get("format", "csv")
+        if not ids:
+            return jsonify({"error": "No CIDs provided"}), 400
+        if len(ids) > 200:
+            return jsonify({"error": "Maximum 200 CIDs per export"}), 400
+        try:
+            ids = [int(i) for i in ids]
+        except (ValueError, TypeError):
+            return jsonify({"error": "Invalid CID ID"}), 400
+
+        headers = ["CID", "Category", "Sub-Category", "Criticality", "Check Type",
+                    "Statement", "Technologies", "Linked Policies", "Created", "Updated"]
+        rows = []
+        for cid in ids:
+            c = get_control(cid)
+            if not c:
+                continue
+            techs = ", ".join(t.get("tech_name", "") for t in (c.get("technologies") or []))
+            policies = ", ".join(str(p.get("policy_id", "")) for p in (c.get("linked_policies") or []))
+            rows.append([
+                c.get("cid"), c.get("category"), c.get("sub_category"),
+                c.get("criticality_label"), c.get("check_type"),
+                (c.get("statement") or "")[:500],
+                techs, policies,
+                c.get("created_date", ""), c.get("update_date", ""),
+            ])
+
+        if fmt == "pdf":
+            return _pdf_response("CID Detail Export", headers, rows, "qkbe-cid-details.pdf")
+        return _csv_response(rows, headers, "qkbe-cid-details.csv")
+    except Exception:
+        logger.exception("Request failed: %s %s", request.method, request.path)
+        return jsonify({"error": "Internal server error"}), 500
+
+
 # Routes — Policies
 # ═══════════════════════════════════════════════════════════════════════════
 

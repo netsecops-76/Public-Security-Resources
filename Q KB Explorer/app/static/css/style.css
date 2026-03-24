@@ -557,12 +557,76 @@ select { cursor: pointer; }
 .btn-danger:hover { background: #c82333; }
 .btn-sm.btn-danger { padding: 4px 10px; font-size: 12px; }
 
-/* ─── Policy Select Checkbox ─── */
-.policy-select-cb {
+/* ─── Select Checkboxes (Policy, QID, CID) ─── */
+.policy-select-cb, .qid-select-cb, .cid-select-cb {
     position: absolute; top: 12px; left: 12px; z-index: 2;
     width: 18px; height: 18px; accent-color: var(--accent); cursor: pointer;
 }
-.policy-card { position: relative; }
+.policy-card, .qid-card, .cid-card { position: relative; }
+
+/* ─── Bookmark Stars ─── */
+.bookmark-star {
+    position: absolute; top: 10px; right: 10px; z-index: 2;
+    cursor: pointer; color: var(--text-2); transition: color 0.15s;
+    line-height: 1;
+}
+.bookmark-star:hover { color: #f59e0b; }
+.bookmark-star.bookmarked { color: #f59e0b; }
+
+/* ─── Keyboard Shortcut Key ─── */
+.kbd {
+    display: inline-block; padding: 2px 7px;
+    font-family: var(--mono); font-size: 12px; font-weight: 600;
+    background: var(--bg-0); border: 1px solid var(--border);
+    border-radius: 4px; color: var(--text-0); min-width: 22px; text-align: center;
+}
+.shortcuts-table { width: 100%; border-collapse: collapse; }
+.shortcuts-table td { padding: 8px 12px; border-bottom: 1px solid var(--border); }
+.shortcuts-table td:first-child { width: 80px; text-align: center; }
+
+/* ─── Recent Search Dropdown ─── */
+.search-bar-wrap { position: relative; display: flex; gap: 6px; align-items: stretch; flex: 1; }
+.recent-search-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    padding: 0 8px; background: var(--bg-0); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); cursor: pointer; color: var(--text-2);
+    transition: color 0.15s, border-color 0.15s;
+}
+.recent-search-btn:hover { color: var(--accent); border-color: var(--accent); }
+.recent-dropdown {
+    display: none; position: absolute; top: 100%; left: 0; right: 0;
+    margin-top: 4px; background: var(--bg-2); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+    max-height: 320px; overflow-y: auto; z-index: 100;
+}
+.recent-item {
+    display: flex; flex-direction: column; gap: 2px;
+    padding: 10px 14px; cursor: pointer; border-bottom: 1px solid var(--border);
+    transition: background 0.1s;
+}
+.recent-item:hover { background: var(--bg-1); }
+.recent-item:last-child { border-bottom: none; }
+.recent-query { font-size: 13px; font-weight: 500; color: var(--text-0); }
+.recent-meta { font-size: 11px; color: var(--text-2); }
+.recent-empty { color: var(--text-2); font-size: 13px; cursor: default; }
+.recent-clear { color: var(--red); font-size: 12px; font-weight: 500; text-align: center; }
+
+/* ─── Help Tab ─── */
+.help-section { margin-bottom: 20px; }
+.help-section h3 {
+    font-size: 16px; font-weight: 600; color: var(--text-0);
+    margin: 0 0 8px; padding-bottom: 6px; border-bottom: 1px solid var(--border);
+}
+.help-section p, .help-section li {
+    font-size: 13px; color: var(--text-1); line-height: 1.6; margin: 0 0 8px;
+}
+.help-section ul { padding-left: 20px; margin: 0 0 8px; }
+.help-table { width: 100%; border-collapse: collapse; margin-bottom: 12px; }
+.help-table td, .help-table th {
+    padding: 6px 12px; border-bottom: 1px solid var(--border);
+    font-size: 13px; text-align: left;
+}
+.help-table th { font-weight: 600; color: var(--text-0); }
 
 .filter-actions {
     display: flex; justify-content: flex-end;

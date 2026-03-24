@@ -70,6 +70,10 @@
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
         Settings
     </button>
+    <button class="tab-btn" data-tab="help" onclick="switchTab('help')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        Help
+    </button>
 </nav>
 
 <!-- ════════════════════════════════════════════════════════════════════════ -->
@@ -202,12 +206,22 @@
             <div class="export-actions" id="qidExportActions" style="display:none;">
                 <button class="btn-sm btn-outline" onclick="exportCSV('qids')" title="Export to CSV">CSV</button>
                 <button class="btn-sm btn-outline" onclick="exportPDF('qids')" title="Export to PDF">PDF</button>
+                <button class="btn-sm btn-outline btn-select-mode" id="qidSelectBtn" onclick="enterQidSelectMode()" title="Select QIDs for bulk export">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+                    Select
+                </button>
             </div>
             <span class="sync-badge" id="qidCount">0 QIDs</span>
         </div>
         <div class="card-body">
             <div class="search-bar">
-                <input type="text" id="qidSearchInput" placeholder="Search by QID number, title, or keyword..." onkeydown="if(event.key==='Enter')searchQids()">
+                <div class="search-bar-wrap">
+                    <input type="text" id="qidSearchInput" placeholder="Search by QID number, title, or keyword..." onkeydown="if(event.key==='Enter')searchQids()">
+                    <button class="recent-search-btn" onclick="toggleRecentDropdown('qids')" title="Recent searches">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                    </button>
+                    <div id="qidsRecentDropdown" class="recent-dropdown" style="display:none;"></div>
+                </div>
                 <button class="btn-primary" onclick="searchQids()">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
                     Search
@@ -295,6 +309,13 @@
             </div>
         </div>
     </div>
+    <div id="qidSelectBar" class="batch-action-bar" style="display:none;">
+        <label class="rti-check"><input type="checkbox" id="qidSelectAll" onchange="toggleAllQids(this.checked)"> Select All</label>
+        <span id="qidSelectedCount" class="batch-count">0 selected</span>
+        <button class="btn-sm btn-primary" onclick="exportSelectedQids('csv')">Export CSV</button>
+        <button class="btn-sm btn-primary" onclick="exportSelectedQids('pdf')">Export PDF</button>
+        <button class="btn-sm btn-outline" onclick="exitQidSelectMode()">Cancel</button>
+    </div>
     <div id="qidResults" class="results-grid">
         <div class="empty-state"><p>Search the Knowledge Base or sync QIDs in Settings to get started.</p></div>
     </div>
@@ -311,12 +332,22 @@
             <div class="export-actions" id="cidExportActions" style="display:none;">
                 <button class="btn-sm btn-outline" onclick="exportCSV('cids')" title="Export to CSV">CSV</button>
                 <button class="btn-sm btn-outline" onclick="exportPDF('cids')" title="Export to PDF">PDF</button>
+                <button class="btn-sm btn-outline btn-select-mode" id="cidSelectBtn" onclick="enterCidSelectMode()" title="Select CIDs for bulk export">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+                    Select
+                </button>
             </div>
             <span class="sync-badge" id="cidCount">0 CIDs</span>
         </div>
         <div class="card-body">
             <div class="search-bar">
-                <input type="text" id="cidSearchInput" placeholder="Search by CID number, statement, or keyword..." onkeydown="if(event.key==='Enter')searchCids()">
+                <div class="search-bar-wrap">
+                    <input type="text" id="cidSearchInput" placeholder="Search by CID number, statement, or keyword..." onkeydown="if(event.key==='Enter')searchCids()">
+                    <button class="recent-search-btn" onclick="toggleRecentDropdown('cids')" title="Recent searches">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                    </button>
+                    <div id="cidsRecentDropdown" class="recent-dropdown" style="display:none;"></div>
+                </div>
                 <button class="btn-primary" onclick="searchCids()">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
                     Search
@@ -341,6 +372,13 @@
                 </button>
             </div>
         </div>
+    </div>
+    <div id="cidSelectBar" class="batch-action-bar" style="display:none;">
+        <label class="rti-check"><input type="checkbox" id="cidSelectAll" onchange="toggleAllCids(this.checked)"> Select All</label>
+        <span id="cidSelectedCount" class="batch-count">0 selected</span>
+        <button class="btn-sm btn-primary" onclick="exportSelectedCids('csv')">Export CSV</button>
+        <button class="btn-sm btn-primary" onclick="exportSelectedCids('pdf')">Export PDF</button>
+        <button class="btn-sm btn-outline" onclick="exitCidSelectMode()">Cancel</button>
     </div>
     <div id="cidResults" class="results-grid">
         <div class="empty-state"><p>Search Compliance Controls or sync CIDs in Settings to get started.</p></div>
@@ -375,7 +413,13 @@
             </div>
             <div class="card-body">
                 <div class="search-bar">
-                    <input type="text" id="policySearchInput" placeholder="Search by policy ID, title..." onkeydown="if(event.key==='Enter')searchPolicies()">
+                    <div class="search-bar-wrap">
+                        <input type="text" id="policySearchInput" placeholder="Search by policy ID, title..." onkeydown="if(event.key==='Enter')searchPolicies()">
+                        <button class="recent-search-btn" onclick="toggleRecentDropdown('policies')" title="Recent searches">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                        </button>
+                        <div id="policiesRecentDropdown" class="recent-dropdown" style="display:none;"></div>
+                    </div>
                     <button class="btn-primary" onclick="searchPolicies()">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
                         Search
@@ -486,7 +530,13 @@
         </div>
         <div class="card-body">
             <div class="search-bar">
-                <input type="text" id="mandateSearchInput" placeholder="Search by mandate title, publisher, or keyword..." onkeydown="if(event.key==='Enter')searchMandates()">
+                <div class="search-bar-wrap">
+                    <input type="text" id="mandateSearchInput" placeholder="Search by mandate title, publisher, or keyword..." onkeydown="if(event.key==='Enter')searchMandates()">
+                    <button class="recent-search-btn" onclick="toggleRecentDropdown('mandates')" title="Recent searches">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                    </button>
+                    <div id="mandatesRecentDropdown" class="recent-dropdown" style="display:none;"></div>
+                </div>
                 <button class="btn-primary" onclick="searchMandates()">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
                     Search
@@ -744,6 +794,123 @@
                 Unlock
             </button>
         </div>
+    </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════════════ -->
+<!-- TAB: Help                                                                -->
+<!-- ════════════════════════════════════════════════════════════════════════ -->
+<div id="tab-help" class="tab-content">
+    <div class="card">
+        <div class="card-header"><h2>Help &amp; Documentation</h2></div>
+        <div class="card-body">
+            <div class="help-section">
+                <h3>About Q KB Explorer</h3>
+                <p>An offline-capable explorer for Qualys Knowledge Base (QIDs), Compliance Controls (CIDs), Policy Compliance Policies, and Compliance Mandates. Built by netsecops-76 as an independent project.</p>
+                <p><strong>Disclaimer:</strong> This tool is not affiliated with, endorsed by, or supported by Qualys, Inc.</p>
+            </div>
+
+            <div class="help-section">
+                <h3>Quick Start</h3>
+                <ul>
+                    <li>Go to <strong>Settings</strong> and select your Qualys platform, then enter your credentials.</li>
+                    <li>Click <strong>Test Connection</strong> to verify access.</li>
+                    <li>Click <strong>Save Settings &amp; Credential</strong> to store securely in the AES-256 vault.</li>
+                    <li>Use the <strong>Data Sync</strong> section to pull QIDs, CIDs, Policies, and Mandates.</li>
+                    <li>Search and explore data in the QIDs, CIDs, Policies, and Mandates tabs.</li>
+                </ul>
+            </div>
+
+            <div class="help-section">
+                <h3>Data Types</h3>
+                <ul>
+                    <li><strong>QIDs</strong> (Knowledge Base) &mdash; Vulnerability detections with severity, CVEs, CVSS scores, diagnosis, and solution information.</li>
+                    <li><strong>CIDs</strong> (Compliance Controls) &mdash; Individual compliance checks with criticality ratings, technology associations, and linked policies.</li>
+                    <li><strong>Policies</strong> &mdash; Collections of compliance controls that can be exported, imported, and migrated between Qualys environments.</li>
+                    <li><strong>Mandates</strong> (Frameworks) &mdash; Regulatory frameworks (PCI DSS, HIPAA, etc.) that map to compliance controls.</li>
+                </ul>
+            </div>
+
+            <div class="help-section">
+                <h3>Search &amp; Filters</h3>
+                <ul>
+                    <li><strong>Full-text search</strong> &mdash; Type keywords to search across titles, descriptions, and metadata. Supports prefix matching for partial words.</li>
+                    <li><strong>Multi-select filters</strong> &mdash; Use dropdowns to filter by severity, category, technology, etc. Combine with AND/OR toggle.</li>
+                    <li><strong>CVE search</strong> &mdash; Type-ahead search for CVE IDs with debounced server queries.</li>
+                    <li><strong>Advanced filters</strong> &mdash; Expand for CVSS ranges, date ranges, PCI flag, vulnerability type, and threat intelligence indicators.</li>
+                    <li><strong>Recent searches</strong> &mdash; Click the clock icon next to any search bar to see and re-run recent searches.</li>
+                </ul>
+            </div>
+
+            <div class="help-section">
+                <h3>Policy Migration</h3>
+                <ul>
+                    <li><strong>Export</strong> &mdash; From a policy detail view, click Export to download the full policy XML from Qualys and store locally.</li>
+                    <li><strong>Import</strong> &mdash; Use the Migration tab to import policy XML files from local upload.</li>
+                    <li><strong>Upload</strong> &mdash; Select a destination credential and upload stored policies to another Qualys environment.</li>
+                    <li><strong>Stale detection</strong> &mdash; Policies modified after export are flagged for re-export.</li>
+                </ul>
+            </div>
+
+            <div class="help-section">
+                <h3>Bookmarks</h3>
+                <ul>
+                    <li>Click the star icon on any QID, CID, or Policy card to bookmark it.</li>
+                    <li>Press <kbd class="kbd">b</kbd> while viewing a detail modal to toggle its bookmark.</li>
+                    <li>Bookmarks are stored locally in your browser (up to 500 items).</li>
+                </ul>
+            </div>
+
+            <div class="help-section">
+                <h3>Bulk Export</h3>
+                <ul>
+                    <li>Click the <strong>Select</strong> button in the QID or CID tab header to enter select mode.</li>
+                    <li>Check individual items or use Select All, then export as CSV or PDF.</li>
+                    <li>Bulk exports include full detail fields (CVEs, diagnosis, solution, etc.).</li>
+                    <li>Maximum 200 items per bulk export.</li>
+                </ul>
+            </div>
+
+            <div class="help-section">
+                <h3>Data Sync</h3>
+                <ul>
+                    <li><strong>Delta Sync</strong> &mdash; Pulls only records modified since last sync. Fast and efficient.</li>
+                    <li><strong>Full Sync</strong> &mdash; Pulls all records. Use for initial sync or monthly refresh. Existing data is purged first.</li>
+                    <li><strong>Scheduling</strong> &mdash; Set up recurring syncs (weekly, bi-weekly, monthly) with timezone support.</li>
+                    <li>Data is cached locally in SQLite for fast offline search.</li>
+                </ul>
+            </div>
+
+            <div class="help-section">
+                <h3>Keyboard Shortcuts</h3>
+                <table class="help-table">
+                    <thead><tr><th>Key</th><th>Action</th></tr></thead>
+                    <tbody id="helpShortcutsBody"></tbody>
+                </table>
+                <p>Shortcuts are disabled while typing in input fields. Press <kbd class="kbd">?</kbd> anywhere to view shortcuts.</p>
+            </div>
+
+            <div class="help-section">
+                <h3>Troubleshooting</h3>
+                <ul>
+                    <li><strong>Empty results after sync</strong> &mdash; Ensure your credential has API access. Check the sync log for errors.</li>
+                    <li><strong>Session expired</strong> &mdash; Re-enter your password in the vault authentication dialog.</li>
+                    <li><strong>Sync timeout</strong> &mdash; Large datasets (100K+ QIDs) may take 10-15 minutes. Keep the browser tab open.</li>
+                    <li><strong>Missing mandates</strong> &mdash; Mandates are extracted from CID sync data. Run a CID sync first.</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ─── Keyboard Shortcuts Modal ─── -->
+<div id="shortcutsModal" class="modal-overlay" style="display:none;" onclick="if(event.target===this)closeModal(this.id)">
+    <div class="modal-box" style="max-width:440px;">
+        <div class="modal-header">
+            <h2>Keyboard Shortcuts</h2>
+            <button class="modal-close" onclick="closeModal('shortcutsModal')">&times;</button>
+        </div>
+        <div class="modal-scroll" id="shortcutsContent"></div>
     </div>
 </div>
 

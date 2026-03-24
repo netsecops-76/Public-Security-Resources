@@ -16,6 +16,35 @@
 ### Fixed
 - Supported modules XML parsing handles string/dict/list variants from xmltodict
 
+### Security
+- HTML sanitization on QID diagnosis/consequence/solution fields (bleach)
+- Rate limiting on credential verification endpoint (flask-limiter)
+- CSRF protection via X-Requested-With header on state-changing requests
+- Server-side HttpOnly auth cookie (replaces client-side cookie)
+- Generic error messages (no internal stack traces exposed)
+- Removed wildcard CORS (same-origin only)
+- Hardened SQL fallback path in sync state updates
+
+### Infrastructure
+- GitHub Actions CI/CD workflow (pytest on push/PR) — Roadmap #49
+- Dependabot configuration (pip, docker, github-actions)
+- Dynamic `secure=True` cookie flag when TLS certificates detected
+
+---
+
+## [v1.3.0] — 2026-03-24 — Phase 4: Quality of Life
+
+### Added
+- Keyboard shortcuts: `1`-`7` tabs, `/` focus search, `?` shortcuts modal, `t` toggle theme, `b` bookmark (Roadmap #47)
+- Bookmark/favorite QIDs, CIDs, and Policies with star icons on cards and detail modals, stored in localStorage (Roadmap #44)
+- Recent searches history with clock icon dropdown on all search bars, max 20 entries in localStorage (Roadmap #45)
+- Bulk export: Select mode on QID and CID tabs with CSV/PDF export of full details including CVEs, diagnosis, solution (Roadmap #46)
+- `POST /api/qids/export-details` endpoint for bulk QID detail export (limit 200)
+- `POST /api/cids/export-details` endpoint for bulk CID detail export (limit 200)
+- Help tab (7th tab) with comprehensive documentation: Quick Start, Data Types, Search, Policy Migration, Bookmarks, Bulk Export, Shortcuts, Troubleshooting (Roadmap #48)
+- Keyboard shortcuts modal (`?` key or via Help tab)
+- 7 new tests for bulk export endpoints (82 total)
+
 ---
 
 ## [v1.2.0] — 2026-03-08

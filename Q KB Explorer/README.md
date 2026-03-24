@@ -11,7 +11,9 @@ Qualys Knowledge Base and Policy Compliance explorer with local caching, full-te
 - Multi-select filters: CVE (type-ahead server search), Category, Severity, Patchable
 - Detail view with CVSS v2/v3 scores, CVE links, Bugtraq refs, vendor references, threat intel, exploit/malware correlation, and affected software
 - Severity color-coded cards (Critical=red, High=orange, Medium=yellow, Low=blue, Info=gray)
+- Supported modules (agent type) display, filtering, and badges on cards
 - Dynamic record count badge: Total | Found | % updates after each search
+- Bulk export of full QID details (including CVEs, diagnosis, solution) as CSV/PDF
 
 ### Compliance Controls (CIDs)
 - Full and delta sync of compliance controls (26K+ CIDs)
@@ -19,6 +21,7 @@ Qualys Knowledge Base and Policy Compliance explorer with local caching, full-te
 - Multi-select filters: Category, Technology (type-ahead), Criticality
 - Detail view with check type, technologies with rationale, and linked policies
 - Cross-navigation: click a linked policy to jump to the Policies tab
+- Bulk export of full CID details as CSV/PDF
 
 ### Policy Compliance
 - Full and delta sync of compliance policies
@@ -41,6 +44,10 @@ Qualys Knowledge Base and Policy Compliance explorer with local caching, full-te
   - Full sync purge warning: confirmation modal warns that all data for the type will be deleted and re-downloaded (useful when switching Qualys tenants)
 - **Sync Log**: Persistent sync history with event-level detail (stored in SQLite)
 - **Theme Toggle**: Dark/light mode
+- **Bookmarks**: Favorite QIDs, CIDs, and Policies with star icons, stored in localStorage
+- **Recent Searches**: Search history dropdown on all search bars
+- **Keyboard Shortcuts**: `1`-`7` tabs, `/` focus search, `?` shortcuts modal, `t` toggle theme, `b` bookmark
+- **Help Tab**: Comprehensive built-in documentation
 
 ### Technical
 - SQLite with WAL mode and FTS5 full-text search indexes
@@ -50,6 +57,8 @@ Qualys Knowledge Base and Policy Compliance explorer with local caching, full-te
 - Cache-busted static assets
 - Single gunicorn worker with 660s timeout for long-running syncs
 - Optional TLS support (mount certs or set env vars)
+- HTML sanitization on QID fields, rate limiting, CSRF protection
+- Server-side HttpOnly auth cookie, same-origin only
 
 ## Quick Start
 
