@@ -1,0 +1,335 @@
+"""
+Q KB Explorer — Sync Scheduler
+Built by netsecops-76
+
+Background scheduler for recurring delta syncs.
+Uses APScheduler with in-process BackgroundScheduler (no Redis/Celery needed).
+All jobs run in UTC internally; user's local timezone is stored for display.
+"""
+
+from __future__ import annotations
+
+import logging
+import threading
+from datetime import datetime
+
+import pytz
+from apscheduler.schedulers.background import BackgroundScheduler
+
+from app.database import (
+    get_all_schedules,
+    get_schedule,
+    save_schedule,
+    delete_schedule as db_delete_schedule,
+    update_schedule_last_run,
+)
+
+logger = logging.getLogger(__name__)
+
+# Module-level scheduler instance
+_scheduler: BackgroundScheduler | None = None
+
+# Frequency → interval in days
+FREQUENCY_DAYS = {
+    "2x_week": 3.5,
+    "1x_week": 7,
+    "2x_month": 15,
+    "1x_month": 30,
+}
+
+FREQUENCY_LABELS = {
+    "2x_week": "Twice a week",
+    "1x_week": "Once a week",
+    "2x_month": "Twice a month",
+    "1x_month": "Once a month",
+}
+
+
+def init_scheduler(app):
+    """Initialize the background scheduler and restore saved schedules.
+
+    Must be called after init_db() so the sync_schedules table exists.
+    """
+    global _scheduler
+
+    _scheduler = BackgroundScheduler(timezone=pytz.utc, daemon=True)
+
+    # Restore saved schedules from DB
+    schedules = get_all_schedules()
+    for sched in schedules:
+        try:
+            _add_job(sched["data_type"], sched)
+            logger.info("Restored schedule for %s: %s", sched["data_type"], sched["frequency"])
+        except Exception as e:
+            logger.warning("Failed to restore schedule for %s: %s", sched["data_type"], e)
+
+    _scheduler.start()
+    logger.info("Sync scheduler started with %d restored jobs", len(schedules))
+
+
+def _local_to_utc(date_str: str, time_str: str, tz_name: str) -> datetime:
+    """Convert a local date + time to a UTC datetime.
+
+    Args:
+        date_str: 'YYYY-MM-DD'
+        time_str: 'HH:MM'
+        tz_name: IANA timezone (e.g. 'America/Phoenix')
+    """
+    tz = pytz.timezone(tz_name)
+    naive = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
+    local_dt = tz.localize(naive)
+    return local_dt.astimezone(pytz.utc)
+
+
+def _utc_to_local(utc_dt: datetime, tz_name: str) -> datetime:
+    """Convert a UTC datetime to a local datetime."""
+    tz = pytz.timezone(tz_name)
+    if utc_dt.tzinfo is None:
+        utc_dt = pytz.utc.localize(utc_dt)
+    return utc_dt.astimezone(tz)
+
+
+def _add_job(data_type: str, sched: dict):
+    """Add an APScheduler interval job for a sync schedule."""
+    if not _scheduler:
+        return
+
+    freq = sched["frequency"]
+    days = FREQUENCY_DAYS.get(freq)
+    if not days:
+        raise ValueError(f"Unknown frequency: {freq}")
+
+    # Calculate UTC start time from user's local time
+    utc_start = _local_to_utc(sched["start_date"], sched["start_time"], sched["timezone"])
+
+    # If the start time is in the past, APScheduler will calculate the
+    # correct next run based on the interval from that start point.
+    now_utc = datetime.now(pytz.utc)
+    next_run = utc_start
+    if next_run < now_utc:
+        # Calculate next future occurrence that aligns with the original start time
+        from datetime import timedelta
+        interval = timedelta(days=days)
+        while next_run < now_utc:
+            next_run += interval
+
+    _scheduler.add_job(
+        execute_scheduled_sync,
+        "interval",
+        days=days,
+        args=[data_type],
+        id=f"sync_{data_type}",
+        next_run_time=next_run,
+        replace_existing=True,
+        misfire_grace_time=3600,  # Allow 1 hour of misfire tolerance
+    )
+
+    # Store next_run_utc in DB
+    update_schedule_last_run(
+        data_type,
+        last_run_utc=sched.get("last_run_utc") or "",
+        next_run_utc=next_run.isoformat(),
+    )
+
+
+def execute_scheduled_sync(data_type: str):
+    """Execute a scheduled delta sync. Called by APScheduler.
+
+    Reuses the same sync infrastructure as the manual trigger_sync route.
+    """
+    # Import here to avoid circular imports
+    from app.main import _active_syncs, _sync_progress, _build_client, app
+    from app.sync import SyncEngine
+    from app.sync_log import create_sync_log
+
+    logger.info("Scheduled sync starting for %s", data_type)
+
+    # Skip if already running
+    thread = _active_syncs.get(data_type)
+    if thread and thread.is_alive():
+        logger.info("Skipping scheduled %s sync — already running", data_type)
+        return
+
+    # Load schedule from DB for credentials
+    sched = get_schedule(data_type)
+    if not sched:
+        logger.warning("No schedule found for %s — skipping", data_type)
+        return
+
+    # Build client using stored credentials
+    with app.app_context():
+        client, error, cred_id = _build_client({
+            "credential_id": sched["credential_id"],
+            "platform": sched["platform"],
+        })
+        if error:
+            logger.error("Scheduled %s sync failed to build client: %s", data_type, error)
+            return
+
+        # Create sync log
+        endpoints = {
+            "qids": "/api/4.0/fo/knowledge_base/vuln/",
+            "cids": "/api/4.0/fo/compliance/control/",
+            "policies": "/api/4.0/fo/compliance/policy/",
+            "mandates": "/api/4.0/fo/compliance/control/",
+        }
+        sync_log = create_sync_log(data_type, False, client.api_base, endpoints[data_type])
+        client.sync_log = sync_log
+
+        def on_progress(info):
+            _sync_progress[data_type] = {**info, "running": True}
+
+        def run_sync():
+            try:
+                engine = SyncEngine(
+                    client, credential_id=cred_id,
+                    on_progress=on_progress, sync_log=sync_log,
+                )
+                method = {
+                    "qids": engine.sync_qids,
+                    "cids": engine.sync_cids,
+                    "policies": engine.sync_policies,
+                    "mandates": engine.sync_mandates,
+                }[data_type]
+                result = method(full=False)
+                _sync_progress[data_type] = result
+                logger.info("Scheduled %s sync complete: %d items", data_type, result.get("items_synced", 0))
+            except Exception as e:
+                logger.exception("Scheduled sync %s failed", data_type)
+                sync_log.finish_error(str(e))
+                _sync_progress[data_type] = {"type": data_type, "error": str(e)}
+            finally:
+                _active_syncs.pop(data_type, None)
+                # Update last_run in DB
+                now_utc = datetime.now(pytz.utc).isoformat()
+                # Get next_run from APScheduler
+                next_utc = None
+                if _scheduler:
+                    job = _scheduler.get_job(f"sync_{data_type}")
+                    if job and job.next_run_time:
+                        next_utc = job.next_run_time.isoformat()
+                update_schedule_last_run(data_type, now_utc, next_utc)
+
+        sync_thread = threading.Thread(target=run_sync, daemon=True)
+        _active_syncs[data_type] = sync_thread
+        _sync_progress[data_type] = {"type": data_type, "status": "started"}
+        sync_thread.start()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Public API
+# ═══════════════════════════════════════════════════════════════════════════
+
+def add_schedule(data_type: str, credential_id: str, platform: str,
+                 frequency: str, start_date: str, start_time: str,
+                 timezone: str) -> dict:
+    """Create or update a sync schedule.
+
+    Returns the schedule info dict.
+    """
+    if frequency not in FREQUENCY_DAYS:
+        raise ValueError(f"Invalid frequency: {frequency}. Use: {list(FREQUENCY_DAYS.keys())}")
+
+    # Calculate next_run_utc
+    utc_start = _local_to_utc(start_date, start_time, timezone)
+    now_utc = datetime.now(pytz.utc)
+    next_run = utc_start
+    if next_run < now_utc:
+        from datetime import timedelta
+        interval = timedelta(days=FREQUENCY_DAYS[frequency])
+        while next_run < now_utc:
+            next_run += interval
+
+    # Save to DB
+    save_schedule(
+        data_type, credential_id, platform, frequency,
+        start_date, start_time, timezone, next_run.isoformat(),
+    )
+
+    # Add APScheduler job
+    sched = get_schedule(data_type)
+    if sched:
+        _add_job(data_type, sched)
+
+    return get_schedule_info_for_type(data_type)
+
+
+def remove_schedule(data_type: str) -> bool:
+    """Remove a sync schedule."""
+    if _scheduler:
+        try:
+            _scheduler.remove_job(f"sync_{data_type}")
+        except Exception:
+            pass  # Job may not exist
+    return db_delete_schedule(data_type)
+
+
+def get_schedule_info() -> list[dict]:
+    """Get all schedules with display-friendly info."""
+    schedules = get_all_schedules()
+    result = []
+    for sched in schedules:
+        result.append(_format_schedule(sched))
+    return result
+
+
+def get_schedule_info_for_type(data_type: str) -> dict | None:
+    """Get schedule info for a single data type."""
+    sched = get_schedule(data_type)
+    if not sched:
+        return None
+    return _format_schedule(sched)
+
+
+def _format_schedule(sched: dict) -> dict:
+    """Format a schedule record for API response with local time display."""
+    tz_name = sched.get("timezone", "UTC")
+    info = {
+        "data_type": sched["data_type"],
+        "credential_id": sched.get("credential_id"),
+        "platform": sched.get("platform"),
+        "frequency": sched["frequency"],
+        "frequency_label": FREQUENCY_LABELS.get(sched["frequency"], sched["frequency"]),
+        "start_date": sched["start_date"],
+        "start_time": sched["start_time"],
+        "timezone": tz_name,
+        "enabled": bool(sched.get("enabled", 1)),
+    }
+
+    # Convert next_run_utc to user's local time for display
+    if sched.get("next_run_utc"):
+        try:
+            utc_dt = datetime.fromisoformat(sched["next_run_utc"].replace("Z", "+00:00"))
+            local_dt = _utc_to_local(utc_dt, tz_name)
+            info["next_run_local"] = local_dt.strftime("%Y-%m-%d %I:%M %p")
+            info["next_run_utc"] = sched["next_run_utc"]
+        except Exception:
+            info["next_run_local"] = None
+            info["next_run_utc"] = sched.get("next_run_utc")
+    else:
+        info["next_run_local"] = None
+        info["next_run_utc"] = None
+
+    # Convert last_run_utc to user's local time for display
+    if sched.get("last_run_utc") and sched["last_run_utc"]:
+        try:
+            utc_dt = datetime.fromisoformat(sched["last_run_utc"].replace("Z", "+00:00"))
+            local_dt = _utc_to_local(utc_dt, tz_name)
+            info["last_run_local"] = local_dt.strftime("%Y-%m-%d %I:%M %p")
+        except Exception:
+            info["last_run_local"] = None
+    else:
+        info["last_run_local"] = None
+
+    # Get actual next_run from APScheduler if available (more accurate)
+    if _scheduler:
+        job = _scheduler.get_job(f"sync_{sched['data_type']}")
+        if job and job.next_run_time:
+            try:
+                local_dt = _utc_to_local(job.next_run_time, tz_name)
+                info["next_run_local"] = local_dt.strftime("%Y-%m-%d %I:%M %p")
+                info["next_run_utc"] = job.next_run_time.isoformat()
+            except Exception:
+                pass
+
+    return info

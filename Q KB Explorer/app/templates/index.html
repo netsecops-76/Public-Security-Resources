@@ -1,0 +1,956 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Q KB Explorer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/style.css?v={{ cache_bust }}">
+</head>
+<body>
+
+<!-- ─── Header ─── -->
+<header class="app-header">
+    <div class="header-left">
+        <div class="logo-mark" onclick="showHelpModal()" title="Not affiliated with Qualys, Inc. Click for details.">
+            <img src="/static/img/qualys-shield.svg" alt="Q" width="28" height="28">
+        </div>
+        <div>
+            <h1>Q KB Explorer</h1>
+            <span class="header-sub">Knowledge Base &amp; Policy Compliance</span>
+        </div>
+    </div>
+    <div class="header-right">
+        <button class="btn-sm header-btn" onclick="showHelpModal()" title="Help & Disclaimer">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        </button>
+        <button id="disconnectBtn" class="btn-sm header-btn disconnect-btn" onclick="disconnectAll()" title="Disconnect and clear auth" style="display:none;">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+            Disconnect
+        </button>
+        <button id="themeToggle" class="theme-toggle" onclick="toggleTheme()" title="Toggle light/dark mode">
+            <svg id="themeIconDark" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1111.21 3a7 7 0 009.79 9.79z"/></svg>
+            <svg id="themeIconLight" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+        </button>
+        <div id="connIndicator" class="conn-indicator">
+            <span class="conn-dot"></span>
+            <span id="connLabel">Not Connected</span>
+        </div>
+    </div>
+</header>
+
+<!-- ─── Tab Bar ─── -->
+<nav class="tab-bar">
+    <button class="tab-btn active" data-tab="dashboard" onclick="switchTab('dashboard')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+        Dashboard
+    </button>
+    <button class="tab-btn" data-tab="qids" onclick="switchTab('qids')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+        QIDs
+        <span id="qidBadge" class="result-badge" style="display:none;">0</span>
+    </button>
+    <button class="tab-btn" data-tab="cids" onclick="switchTab('cids')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
+        CIDs
+        <span id="cidBadge" class="result-badge" style="display:none;">0</span>
+    </button>
+    <button class="tab-btn" data-tab="policies" onclick="switchTab('policies')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        Policies
+        <span id="policyBadge" class="result-badge" style="display:none;">0</span>
+    </button>
+    <button class="tab-btn" data-tab="mandates" onclick="switchTab('mandates')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        Mandates
+        <span id="mandateBadge" class="result-badge" style="display:none;">0</span>
+    </button>
+    <button class="tab-btn" data-tab="settings" onclick="switchTab('settings')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+        Settings
+    </button>
+</nav>
+
+<!-- ════════════════════════════════════════════════════════════════════════ -->
+<!-- TAB: Dashboard                                                          -->
+<!-- ════════════════════════════════════════════════════════════════════════ -->
+<div id="tab-dashboard" class="tab-content active">
+    <!-- Row 1: Data Overview -->
+    <div class="stat-row">
+        <div class="stat-card" id="statCardQids">
+            <div class="stat-card-icon sev-5-bg">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            </div>
+            <div class="stat-card-body">
+                <span class="stat-card-value" id="dashQidCount">—</span>
+                <span class="stat-card-label">QIDs</span>
+                <span class="stat-card-sub" id="dashQidSync">Not synced</span>
+            </div>
+        </div>
+        <div class="stat-card" id="statCardCids">
+            <div class="stat-card-icon sev-4-bg">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
+            </div>
+            <div class="stat-card-body">
+                <span class="stat-card-value" id="dashCidCount">—</span>
+                <span class="stat-card-label">CIDs</span>
+                <span class="stat-card-sub" id="dashCidSync">Not synced</span>
+            </div>
+        </div>
+        <div class="stat-card" id="statCardPolicies">
+            <div class="stat-card-icon sev-3-bg">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+            </div>
+            <div class="stat-card-body">
+                <span class="stat-card-value" id="dashPolicyCount">—</span>
+                <span class="stat-card-label">Policies</span>
+                <span class="stat-card-sub" id="dashPolicySync">Not synced</span>
+            </div>
+        </div>
+        <div class="stat-card" id="statCardMandates">
+            <div class="stat-card-icon sev-2-bg">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+            </div>
+            <div class="stat-card-body">
+                <span class="stat-card-value" id="dashMandateCount">—</span>
+                <span class="stat-card-label">Mandates</span>
+                <span class="stat-card-sub" id="dashMandateSync">Not synced</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Row 2: Charts -->
+    <div class="dashboard-grid">
+        <div class="card">
+            <div class="card-header"><h2>QID Severity Distribution</h2></div>
+            <div class="card-body">
+                <div class="chart-container"><canvas id="severityChart"></canvas></div>
+                <div id="severityLegend" class="chart-legend"></div>
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-header"><h2>CID Criticality Distribution</h2></div>
+            <div class="card-body">
+                <div class="chart-container"><canvas id="criticalityChart"></canvas></div>
+                <div id="criticalityLegend" class="chart-legend"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Row 3: Categories + Compliance -->
+    <div class="dashboard-grid">
+        <div class="card">
+            <div class="card-header">
+                <h2>Top 15 QID Categories</h2>
+                <div class="patchable-ring" id="patchableRing">
+                    <span class="patchable-pct" id="patchablePct">—</span>
+                    <span class="patchable-label">Patchable</span>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="chart-container chart-container-bar"><canvas id="categoriesChart"></canvas></div>
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-header"><h2>Compliance Coverage</h2></div>
+            <div class="card-body compliance-summary" id="complianceSummary">
+                <div class="compliance-metric">
+                    <span class="compliance-value" id="compMandateCount">—</span>
+                    <span class="compliance-label">Mandates</span>
+                </div>
+                <div class="compliance-metric">
+                    <span class="compliance-value" id="compControlCoverage">—</span>
+                    <span class="compliance-label">Controls in Mandates</span>
+                    <div class="compliance-bar"><div class="compliance-bar-fill" id="compControlBar"></div></div>
+                </div>
+                <div class="compliance-metric">
+                    <span class="compliance-value" id="compPolicyCoverage">—</span>
+                    <span class="compliance-label">Policies with Controls</span>
+                    <div class="compliance-bar"><div class="compliance-bar-fill" id="compPolicyBar"></div></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Row 4: Sync Health -->
+    <div class="card">
+        <div class="card-header">
+            <h2>Sync Health</h2>
+            <button class="btn-sm" onclick="loadDashboard()">Refresh</button>
+        </div>
+        <div class="card-body">
+            <table class="sync-health-table" id="syncHealthTable">
+                <thead>
+                    <tr><th>Data Type</th><th>Records</th><th>Last Sync</th><th>Last Full Sync</th><th>Status</th></tr>
+                </thead>
+                <tbody id="syncHealthBody">
+                    <tr><td colspan="5" class="empty-state">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════════════ -->
+<!-- TAB: QIDs                                                               -->
+<!-- ════════════════════════════════════════════════════════════════════════ -->
+<div id="tab-qids" class="tab-content">
+    <div class="card">
+        <div class="card-header">
+            <h2>Knowledge Base — QIDs</h2>
+            <div class="export-actions" id="qidExportActions" style="display:none;">
+                <button class="btn-sm btn-outline" onclick="exportCSV('qids')" title="Export to CSV">CSV</button>
+                <button class="btn-sm btn-outline" onclick="exportPDF('qids')" title="Export to PDF">PDF</button>
+            </div>
+            <span class="sync-badge" id="qidCount">0 QIDs</span>
+        </div>
+        <div class="card-body">
+            <div class="search-bar">
+                <input type="text" id="qidSearchInput" placeholder="Search by QID number, title, or keyword..." onkeydown="if(event.key==='Enter')searchQids()">
+                <button class="btn-primary" onclick="searchQids()">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                    Search
+                </button>
+            </div>
+            <div class="filter-row">
+                <div id="qidCveMs" class="ms-wrap"></div>
+                <select id="qidSeverityFilter">
+                    <option value="">Any Severity</option>
+                    <option value="5">5 — Urgent</option>
+                    <option value="4">4 — Critical</option>
+                    <option value="3">3 — Serious</option>
+                    <option value="2">2 — Medium</option>
+                    <option value="1">1 — Minimal</option>
+                </select>
+                <select id="qidPatchableFilter">
+                    <option value="">Any Patchable</option>
+                    <option value="1">Patchable</option>
+                    <option value="0">Not Patchable</option>
+                </select>
+                <div id="qidCategoryMs" class="ms-wrap"></div>
+            </div>
+            <!-- Advanced Filters Toggle -->
+            <div class="advanced-filter-toggle" onclick="toggleAdvancedQidFilters()">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+                <span>Advanced Filters</span>
+                <span class="advanced-filter-count" id="qidAdvFilterCount" style="display:none;"></span>
+            </div>
+            <!-- Advanced Filters Panel (collapsed by default) -->
+            <div id="qidAdvancedFilters" class="advanced-filters" style="display:none;">
+                <div class="filter-row">
+                    <select id="qidVulnTypeFilter">
+                        <option value="">Any Type</option>
+                        <option value="Vulnerability">Vulnerability</option>
+                        <option value="Information Gathered">Information Gathered</option>
+                        <option value="Practice">Practice</option>
+                        <option value="Potential">Potential</option>
+                    </select>
+                    <select id="qidPciFilter">
+                        <option value="">Any PCI</option>
+                        <option value="1">PCI Vuln</option>
+                        <option value="0">Non-PCI</option>
+                    </select>
+                    <select id="qidDiscoveryFilter">
+                        <option value="">Any Discovery</option>
+                        <option value="remote">Remote Only</option>
+                        <option value="auth">Authenticated Only</option>
+                    </select>
+                    <div id="qidSupportedModulesMs" class="ms-wrap"></div>
+                </div>
+                <div class="filter-row">
+                    <div class="filter-input-group">
+                        <label>CVSS v2 &ge;</label>
+                        <input type="number" id="qidCvssBaseMin" min="0" max="10" step="0.1" placeholder="0.0">
+                    </div>
+                    <div class="filter-input-group">
+                        <label>CVSS v3.1 &ge;</label>
+                        <input type="number" id="qidCvss3BaseMin" min="0" max="10" step="0.1" placeholder="0.0">
+                    </div>
+                    <div class="filter-input-group">
+                        <label>Published After</label>
+                        <input type="date" id="qidPublishedAfter">
+                    </div>
+                    <div class="filter-input-group">
+                        <label>Modified After</label>
+                        <input type="date" id="qidModifiedAfter">
+                    </div>
+                </div>
+                <div class="filter-row">
+                    <div class="rti-checkboxes">
+                        <span class="rti-label">Threat Intel:</span>
+                        <label class="rti-check"><input type="checkbox" id="qidRtiExploit" value="has_exploit"> Has Exploit</label>
+                        <label class="rti-check"><input type="checkbox" id="qidRtiMalware" value="Malware"> Malware</label>
+                        <label class="rti-check"><input type="checkbox" id="qidRtiActiveAttack" value="Active_Attacks"> Active Attack</label>
+                        <label class="rti-check"><input type="checkbox" id="qidRtiRansomware" value="Ransomware"> Ransomware</label>
+                        <label class="rti-check"><input type="checkbox" id="qidRtiCisaKev" value="Cisa_Known_Exploited_Vulns"> CISA KEV</label>
+                    </div>
+                </div>
+            </div>
+            <div class="filter-actions">
+                <button class="btn-clear-filters" onclick="clearQidFilters()" title="Clear all filters">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    Clear Filters
+                </button>
+            </div>
+        </div>
+    </div>
+    <div id="qidResults" class="results-grid">
+        <div class="empty-state"><p>Search the Knowledge Base or sync QIDs in Settings to get started.</p></div>
+    </div>
+    <div id="qidPagination" class="pagination-controls" style="display:none;"></div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════════════ -->
+<!-- TAB: CIDs                                                               -->
+<!-- ════════════════════════════════════════════════════════════════════════ -->
+<div id="tab-cids" class="tab-content">
+    <div class="card">
+        <div class="card-header">
+            <h2>Compliance Controls — CIDs</h2>
+            <div class="export-actions" id="cidExportActions" style="display:none;">
+                <button class="btn-sm btn-outline" onclick="exportCSV('cids')" title="Export to CSV">CSV</button>
+                <button class="btn-sm btn-outline" onclick="exportPDF('cids')" title="Export to PDF">PDF</button>
+            </div>
+            <span class="sync-badge" id="cidCount">0 CIDs</span>
+        </div>
+        <div class="card-body">
+            <div class="search-bar">
+                <input type="text" id="cidSearchInput" placeholder="Search by CID number, statement, or keyword..." onkeydown="if(event.key==='Enter')searchCids()">
+                <button class="btn-primary" onclick="searchCids()">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                    Search
+                </button>
+            </div>
+            <div class="filter-row">
+                <div id="cidCategoryMs" class="ms-wrap"></div>
+                <select id="cidCriticalityFilter">
+                    <option value="">Any Criticality</option>
+                    <option value="URGENT">Urgent</option>
+                    <option value="CRITICAL">Critical</option>
+                    <option value="SERIOUS">Serious</option>
+                    <option value="MEDIUM">Medium</option>
+                    <option value="MINIMAL">Minimal</option>
+                </select>
+                <div id="cidTechnologyMs" class="ms-wrap"></div>
+            </div>
+            <div class="filter-actions">
+                <button class="btn-clear-filters" onclick="clearCidFilters()" title="Clear all filters">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    Clear Filters
+                </button>
+            </div>
+        </div>
+    </div>
+    <div id="cidResults" class="results-grid">
+        <div class="empty-state"><p>Search Compliance Controls or sync CIDs in Settings to get started.</p></div>
+    </div>
+    <div id="cidPagination" class="pagination-controls" style="display:none;"></div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════════════ -->
+<!-- TAB: Policies                                                           -->
+<!-- ════════════════════════════════════════════════════════════════════════ -->
+<div id="tab-policies" class="tab-content">
+    <!-- Sub-tab navigation -->
+    <div class="sub-tab-bar">
+        <button class="sub-tab-btn active" data-subtab="browse" onclick="switchPolicySubTab('browse')">Browse</button>
+        <button class="sub-tab-btn" data-subtab="migration" onclick="switchPolicySubTab('migration')">Migration</button>
+    </div>
+
+    <!-- Sub-tab: Browse -->
+    <div id="policy-subtab-browse" class="policy-subtab active">
+        <div class="card">
+            <div class="card-header">
+                <h2>Policy Compliance — Policies</h2>
+                <div class="export-actions" id="policyExportActions" style="display:none;">
+                    <button class="btn-sm btn-outline" onclick="exportCSV('policies')" title="Export to CSV">CSV</button>
+                    <button class="btn-sm btn-outline" onclick="exportPDF('policies')" title="Export to PDF">PDF</button>
+                    <button class="btn-sm btn-outline btn-select-mode" id="policySelectBtn" onclick="enterPolicySelectMode()" title="Select policies for deletion">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+                        Select
+                    </button>
+                </div>
+                <span class="sync-badge" id="policyCount">0 Policies</span>
+            </div>
+            <div class="card-body">
+                <div class="search-bar">
+                    <input type="text" id="policySearchInput" placeholder="Search by policy ID, title..." onkeydown="if(event.key==='Enter')searchPolicies()">
+                    <button class="btn-primary" onclick="searchPolicies()">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                        Search
+                    </button>
+                </div>
+                <div class="filter-row">
+                    <select id="policyStatusFilter">
+                        <option value="">Any Status</option>
+                        <option value="Active">Active</option>
+                        <option value="Draft">Draft</option>
+                    </select>
+                    <div id="policyCtrlCatMs" class="ms-wrap"></div>
+                    <div class="policy-tech-wrap" style="position:relative;">
+                        <div id="policyTechMs" class="ms-wrap"></div>
+                        <span id="policyTechHint" class="filter-hint" style="display:none;">Requires CID sync</span>
+                    </div>
+                </div>
+                <div class="filter-row" style="margin-top:8px;">
+                    <div id="policyCidMs" class="ms-wrap"></div>
+                    <div id="policyCtrlNameMs" class="ms-wrap"></div>
+                </div>
+                <div class="filter-actions">
+                    <button class="btn-clear-filters" onclick="clearPolicyFilters()" title="Clear all filters">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                        Clear Filters
+                    </button>
+                </div>
+            </div>
+        </div>
+        <div id="policyDeleteBar" class="batch-action-bar" style="display:none;">
+            <label class="rti-check"><input type="checkbox" id="policySelectAll" onchange="toggleAllPolicies(this.checked)"> Select All</label>
+            <span id="policySelectedCount" class="batch-count">0 selected</span>
+            <button class="btn-sm btn-danger" onclick="deleteSelectedPolicies()">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                Delete Selected
+            </button>
+            <button class="btn-sm btn-outline" onclick="exitPolicySelectMode()">Cancel</button>
+        </div>
+        <div id="policyResults" class="results-grid">
+            <div class="empty-state"><p>Search Policies or sync in Settings to get started.</p></div>
+        </div>
+        <div id="policyPagination" class="pagination-controls" style="display:none;"></div>
+    </div>
+
+    <!-- Sub-tab: Migration -->
+    <div id="policy-subtab-migration" class="policy-subtab">
+        <div class="card">
+            <div class="card-header"><h2>Destination Environment</h2></div>
+            <div class="card-body">
+                <div class="form-group">
+                    <label>Select Destination Credential</label>
+                    <select id="migrationDestCred">
+                        <option value="">— Select Destination —</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-header">
+                <h2>Select Policies to Migrate</h2>
+                <div class="header-actions">
+                    <button class="btn-sm" onclick="selectAllMigration()">Select All</button>
+                    <button class="btn-sm" onclick="deselectAllMigration()">Deselect All</button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div id="migrationPolicyList">
+                    <div class="empty-state"><p>Sync policies first, then select policies to migrate.</p></div>
+                </div>
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-body">
+                <input type="file" id="policyXmlFileInput" accept=".xml" multiple style="display:none;" onchange="handlePolicyXmlImport(this)">
+                <div class="action-bar">
+                    <button class="btn-primary" onclick="document.getElementById('policyXmlFileInput').click()">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 12 15 15"/></svg>
+                        Import XML
+                    </button>
+                    <button class="btn-primary" onclick="exportSelectedPolicies()">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                        Export XML
+                    </button>
+                    <button class="btn-primary" onclick="uploadSelectedPolicies()">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                        Upload to Destination
+                    </button>
+                </div>
+                <div id="migrationProgress" class="migration-progress-log" style="display:none;"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════════════ -->
+<!-- TAB: Mandates                                                            -->
+<!-- ════════════════════════════════════════════════════════════════════════ -->
+<div id="tab-mandates" class="tab-content">
+    <div class="card">
+        <div class="card-header">
+            <h2>COMPLIANCE MANDATES — FRAMEWORKS</h2>
+            <div class="export-actions" id="mandateExportActions" style="display:none;">
+                <button class="btn-sm btn-outline" onclick="exportCSV('mandates')" title="Export to CSV">CSV</button>
+                <button class="btn-sm btn-outline" onclick="exportPDF('mandates')" title="Export to PDF">PDF</button>
+                <button class="btn-sm btn-outline" onclick="exportMandateMap()" title="Export compliance mapping">Map</button>
+            </div>
+            <span class="sync-badge" id="mandateCount">0 Mandates</span>
+        </div>
+        <div class="card-body">
+            <div class="search-bar">
+                <input type="text" id="mandateSearchInput" placeholder="Search by mandate title, publisher, or keyword..." onkeydown="if(event.key==='Enter')searchMandates()">
+                <button class="btn-primary" onclick="searchMandates()">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                    Search
+                </button>
+            </div>
+            <div class="filter-row">
+                <div id="mandatePublisherMs" class="ms-wrap"></div>
+            </div>
+            <div class="filter-actions">
+                <button class="btn-clear-filters" onclick="clearMandateFilters()" title="Clear all filters">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    Clear Filters
+                </button>
+            </div>
+        </div>
+    </div>
+    <div id="mandateResults" class="results-grid">
+        <div class="empty-state"><p>Search Compliance Mandates or sync CIDs in Settings to populate framework data.</p></div>
+    </div>
+    <div id="mandatePagination" class="pagination-controls" style="display:none;"></div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════════════ -->
+<!-- TAB: Settings                                                           -->
+<!-- ════════════════════════════════════════════════════════════════════════ -->
+<div id="tab-settings" class="tab-content">
+
+    <!-- Connection -->
+    <div class="card">
+        <div class="card-header"><h2>Connection</h2></div>
+        <div class="card-body">
+            <div class="form-group">
+                <label>Qualys Platform</label>
+                <select id="platformSelect" onchange="onPlatformChange()">
+                    <option value="">— Select Platform —</option>
+                </select>
+            </div>
+            <div class="form-row">
+                <div class="form-group" style="flex:1">
+                    <label>API Server URL</label>
+                    <input type="text" id="baseUrl" placeholder="https://qualysapi.qg3.apps.qualys.com">
+                </div>
+                <div class="form-group" style="flex:1">
+                    <label>Gateway URL <span class="optional">(for cloud APIs)</span></label>
+                    <input type="text" id="gatewayUrl" placeholder="https://gateway.qg3.apps.qualys.com">
+                </div>
+            </div>
+            <div class="form-row" style="align-items:center; gap:12px; margin-top:8px;">
+                <label style="margin:0; min-width:auto;">API Version</label>
+                <div class="toggle-group api-ver-toggle">
+                    <button class="toggle-btn" onclick="setApiVersion('v2', this)">v2 (Legacy)</button>
+                    <button class="toggle-btn active" onclick="setApiVersion('v5', this)">v5 (Current)</button>
+                </div>
+                <span class="optional" style="font-size:0.8em;">Qualys is migrating v2 &rarr; v5.</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Authentication -->
+    <div class="card">
+        <div class="card-header"><h2>Authentication</h2></div>
+        <div class="card-body">
+            <div class="form-row">
+                <div class="form-group" style="flex:1">
+                    <label>Username</label>
+                    <div class="credential-picker">
+                        <input type="text" id="username" placeholder="Qualys username" autocomplete="username">
+                        <button class="cred-dropdown-btn" onclick="toggleCredentialPicker()" type="button" title="Saved credentials">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                        </button>
+                        <div id="credPickerDropdown" class="cred-dropdown" style="display:none;"></div>
+                    </div>
+                </div>
+                <div class="form-group" style="flex:1">
+                    <label>Password</label>
+                    <input type="password" id="password" placeholder="Qualys password" autocomplete="current-password">
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group" style="flex:1">
+                    <label>Display Name <span class="optional">(optional — shown in credential selectors)</span></label>
+                    <input type="text" id="credDisplayName" placeholder="e.g. Production, Staging, Lab">
+                </div>
+            </div>
+            <div class="action-bar">
+                <button class="btn-primary" onclick="testConnection()" id="testConnBtn">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+                    Test Connection
+                </button>
+                <button class="btn-ghost" onclick="clearCredentials()">Clear Credentials</button>
+            </div>
+            <div class="cred-vault-bar">
+                <button class="btn-primary" onclick="saveCredential()">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                    Save Settings &amp; Credential
+                </button>
+                <span class="cred-vault-hint" id="credVaultCount">No saved credentials</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Security -->
+    <div class="card">
+        <div class="card-header"><h2>Security</h2></div>
+        <div class="card-body">
+            <div class="form-group">
+                <label class="timeout-toggle-label">
+                    <input type="checkbox" id="sessionTimeoutEnabled"
+                           onchange="onSessionTimeoutToggle(this.checked)"
+                           style="accent-color: var(--accent); width: 15px; height: 15px; vertical-align: middle; margin-right: 6px;">
+                    Enable Session Timeout
+                </label>
+                <span class="optional">Automatically lock the vault after a period of inactivity</span>
+            </div>
+            <div id="sessionTimeoutSliderGroup" class="timeout-slider-group" style="display:none;">
+                <div class="timeout-slider-row">
+                    <input type="range" id="sessionTimeoutSlider" class="timeout-slider"
+                           min="15" max="480" step="15" value="60"
+                           oninput="onSessionTimeoutSlider(this.value)">
+                    <span id="sessionTimeoutDisplay" class="timeout-display">1 hr</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Sync Status -->
+    <div class="card">
+        <div class="card-header">
+            <h2>Data Sync</h2>
+            <button class="btn-sm" onclick="loadSyncStatus()">Refresh Status</button>
+        </div>
+        <div class="card-body">
+            <div class="sync-status-grid" id="syncStatusGrid">
+                <div class="sync-row" id="syncRowQids">
+                    <div class="sync-info">
+                        <span class="sync-label">QIDs (Knowledge Base)</span>
+                        <span class="sync-meta" id="syncQidMeta">Not synced</span>
+                        <div id="schedBadgeQids" class="schedule-badge" style="display:none;"></div>
+                    </div>
+                    <div class="sync-actions">
+                        <button class="btn-sm btn-outline" onclick="showSyncDetails('qids')">Last Sync Details</button>
+                        <button class="btn-sm" onclick="showDeltaSyncModal('qids')">Delta Sync</button>
+                        <button class="btn-sm btn-warn" onclick="triggerSync('qids', true)">Full Sync</button>
+                    </div>
+                    <div class="sync-progress" id="syncProgressQids" style="display:none">
+                        <div class="sync-progress-bar"><div class="sync-progress-fill" id="syncFillQids"></div></div>
+                        <span class="sync-progress-text" id="syncTextQids"></span>
+                    </div>
+                </div>
+                <div class="sync-row" id="syncRowCids">
+                    <div class="sync-info">
+                        <span class="sync-label">CIDs (Controls)</span>
+                        <span class="sync-meta" id="syncCidMeta">Not synced</span>
+                        <div id="schedBadgeCids" class="schedule-badge" style="display:none;"></div>
+                    </div>
+                    <div class="sync-actions">
+                        <button class="btn-sm btn-outline" onclick="showSyncDetails('cids')">Last Sync Details</button>
+                        <button class="btn-sm" onclick="showDeltaSyncModal('cids')">Delta Sync</button>
+                        <button class="btn-sm btn-warn" onclick="triggerSync('cids', true)">Full Sync</button>
+                    </div>
+                    <div class="sync-progress" id="syncProgressCids" style="display:none">
+                        <div class="sync-progress-bar"><div class="sync-progress-fill" id="syncFillCids"></div></div>
+                        <span class="sync-progress-text" id="syncTextCids"></span>
+                    </div>
+                </div>
+                <div class="sync-row" id="syncRowPolicies">
+                    <div class="sync-info">
+                        <span class="sync-label">Policies</span>
+                        <span class="sync-meta" id="syncPolicyMeta">Not synced</span>
+                        <div id="schedBadgePolicies" class="schedule-badge" style="display:none;"></div>
+                    </div>
+                    <div class="sync-actions">
+                        <button class="btn-sm btn-outline" onclick="showSyncDetails('policies')">Last Sync Details</button>
+                        <button class="btn-sm" onclick="showDeltaSyncModal('policies')">Delta Sync</button>
+                        <button class="btn-sm btn-warn" onclick="triggerSync('policies', true)">Full Sync</button>
+                    </div>
+                    <div class="sync-progress" id="syncProgressPolicies" style="display:none">
+                        <div class="sync-progress-bar"><div class="sync-progress-fill" id="syncFillPolicies"></div></div>
+                        <span class="sync-progress-text" id="syncTextPolicies"></span>
+                    </div>
+                </div>
+                <div class="sync-row" id="syncRowMandates">
+                    <div class="sync-info">
+                        <span class="sync-label">Mandates (Frameworks)</span>
+                        <span class="sync-meta" id="syncMandateMeta">Not synced</span>
+                        <div id="schedBadgeMandates" class="schedule-badge" style="display:none;"></div>
+                    </div>
+                    <div class="sync-actions">
+                        <button class="btn-sm btn-outline" onclick="showSyncDetails('mandates')">Last Sync Details</button>
+                        <button class="btn-sm" onclick="showDeltaSyncModal('mandates')">Delta Sync</button>
+                        <button class="btn-sm btn-warn" onclick="triggerSync('mandates', true)">Full Sync</button>
+                    </div>
+                    <div class="sync-progress" id="syncProgressMandates" style="display:none">
+                        <div class="sync-progress-bar"><div class="sync-progress-fill" id="syncFillMandates"></div></div>
+                        <span class="sync-progress-text" id="syncTextMandates"></span>
+                    </div>
+                </div>
+                <!-- CID dependency warning for Policies -->
+                <div id="policyCidWarning" class="sync-dependency-warning" style="display:none;">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--orange)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+                        <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+                    </svg>
+                    <span id="policyCidWarningText">CID data is missing or stale. Technology filters and CID cross-references in Policies require a CID sync.</span>
+                    <button class="btn-sm" onclick="triggerSync('cids', false)" style="margin-left:auto;white-space:nowrap;">Sync CIDs Now</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- About -->
+    <div class="card">
+        <div class="card-header"><h2>About</h2></div>
+        <div class="card-body">
+            <p class="about-note">Built by netsecops-76. Q KB Explorer provides offline-capable search and cross-referencing for Qualys Knowledge Base (QIDs), Compliance Controls (CIDs), and Policy Compliance Policies.</p>
+            <p class="about-note">v1.0.0</p>
+        </div>
+    </div>
+</div>
+
+<!-- ─── Loading Overlay ─── -->
+<div id="loadingOverlay" class="loading-overlay" style="display:none;">
+    <div class="loader">
+        <div class="loader-ring"></div>
+        <span id="loadingText">Loading...</span>
+    </div>
+</div>
+
+<!-- ─── Toast Container ─── -->
+<div id="toastContainer" class="toast-container"></div>
+
+<!-- ─── Vault Auth Challenge Modal ─── -->
+<div id="vaultAuthModal" class="modal-overlay" style="display:none;">
+    <div class="modal-box vault-auth-modal">
+        <div class="modal-header">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+            <h2>Verify Your Identity</h2>
+        </div>
+        <div class="vault-auth-body">
+            <p>Saved credentials were found. Select an account and enter its password to continue.</p>
+            <div class="form-group">
+                <label>Account</label>
+                <select id="vaultAuthSelect" class="vault-auth-select"></select>
+            </div>
+            <div class="form-group">
+                <label>Password</label>
+                <input type="password" id="vaultAuthPassword" placeholder="Enter password for selected account" autocomplete="current-password"
+                    onkeydown="if(event.key==='Enter')verifyVaultAuth()">
+            </div>
+            <div id="vaultAuthError" class="vault-auth-error" style="display:none;"></div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn-primary" onclick="verifyVaultAuth()">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+                Unlock
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- ─── Help Modal ─── -->
+<div id="helpModal" class="modal-overlay" style="display:none;" onclick="if(event.target===this)closeModal(this.id)">
+    <div class="modal-box help-modal">
+        <div class="modal-header">
+            <img src="/static/img/qualys-shield.svg" alt="" width="28" height="28">
+            <h2>Help &amp; About</h2>
+            <button class="modal-close" onclick="closeModal('helpModal')">&times;</button>
+        </div>
+        <div class="modal-scroll">
+            <h3>About Q KB Explorer</h3>
+            <p>An offline-capable explorer for Qualys Knowledge Base (QIDs), Compliance Controls (CIDs), and Policy Compliance Policies. Built by netsecops-76 as an independent project.</p>
+
+            <h3>Disclaimer</h3>
+            <p>This tool is <strong>not affiliated with, endorsed by, or supported by Qualys, Inc.</strong> The Qualys name and shield are trademarks of Qualys, Inc. No warranty or support is provided. Use at your own risk.</p>
+
+            <h3>Quick Start</h3>
+            <p><strong>1.</strong> Go to <em>Settings</em> &rarr; select your Qualys platform &rarr; enter credentials.<br>
+            <strong>2.</strong> Click <em>Test Connection</em> to verify access.<br>
+            <strong>3.</strong> Click <em>Save Settings &amp; Credential</em> to store securely.<br>
+            <strong>4.</strong> Use the <em>Data Sync</em> section to pull QIDs, CIDs, and Policies.<br>
+            <strong>5.</strong> Search and explore data in the QIDs, CIDs, and Policies tabs.</p>
+
+            <h3>Data Sync</h3>
+            <p><strong>Delta Sync:</strong> Pulls only records modified since last sync. Fast and efficient.<br>
+            <strong>Full Sync:</strong> Pulls all records. Use for initial sync or monthly refresh.<br>
+            Data is cached locally in SQLite for fast offline search.</p>
+
+            <h3>Policy Migration</h3>
+            <p>Export policies from your source environment (stored locally as XML), then import to a destination environment. Supports batch operations and title editing.</p>
+        </div>
+        <div class="modal-footer">
+            <button class="btn-primary" onclick="closeModal('helpModal')">Close</button>
+        </div>
+    </div>
+</div>
+
+<!-- ─── QID Detail Modal ─── -->
+<div id="qidDetailModal" class="modal-overlay" style="display:none;" onclick="if(event.target===this)closeModal(this.id)">
+    <div class="modal-box detail-modal">
+        <div class="modal-header">
+            <h2 id="qidDetailTitle">QID Detail</h2>
+            <button class="modal-close" onclick="closeModal('qidDetailModal')">&times;</button>
+        </div>
+        <div class="modal-scroll" id="qidDetailContent"></div>
+    </div>
+</div>
+
+<!-- ─── CID Detail Modal ─── -->
+<div id="cidDetailModal" class="modal-overlay" style="display:none;" onclick="if(event.target===this)closeModal(this.id)">
+    <div class="modal-box detail-modal">
+        <div class="modal-header">
+            <h2 id="cidDetailTitle">CID Detail</h2>
+            <button class="modal-close" onclick="closeModal('cidDetailModal')">&times;</button>
+        </div>
+        <div class="modal-scroll" id="cidDetailContent"></div>
+    </div>
+</div>
+
+<!-- ─── Policy Detail Modal ─── -->
+<div id="policyDetailModal" class="modal-overlay" style="display:none;" onclick="if(event.target===this)closeModal(this.id)">
+    <div class="modal-box detail-modal">
+        <div class="modal-header">
+            <h2 id="policyDetailTitle">Policy Detail</h2>
+            <button class="btn-sm btn-danger" id="policyDetailDeleteBtn" onclick="deleteSinglePolicy()" title="Delete this policy" style="margin-left:auto;margin-right:12px;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                Delete
+            </button>
+            <button class="modal-close" onclick="closeModal('policyDetailModal')">&times;</button>
+        </div>
+        <div class="modal-scroll" id="policyDetailContent"></div>
+    </div>
+</div>
+
+<!-- Policy Technologies Popup -->
+<div id="policyTechPopupModal" class="modal-overlay" style="display:none;" onclick="if(event.target===this)closeModal(this.id)">
+    <div class="modal-box" style="max-width:600px;">
+        <div class="modal-header">
+            <h2 id="policyTechPopupTitle">Technologies</h2>
+            <button class="modal-close" onclick="closeModal('policyTechPopupModal')">&times;</button>
+        </div>
+        <div class="modal-scroll" id="policyTechPopupContent"></div>
+    </div>
+</div>
+
+<!-- Policy Report Modal -->
+<div id="policyReportModal" class="modal-overlay" style="display:none;" onclick="if(event.target===this)closeModal(this.id)">
+    <div class="modal-box report-modal">
+        <div class="modal-header">
+            <h2 id="policyReportTitle">Policy Report</h2>
+            <button class="btn-sm" onclick="downloadPolicyReportPdf()" title="Download PDF" style="margin-left:auto;margin-right:12px;display:inline-flex;align-items:center;gap:6px;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                Download PDF
+            </button>
+            <button class="modal-close" onclick="closeModal('policyReportModal')">&times;</button>
+        </div>
+        <div class="modal-scroll" id="policyReportContent"></div>
+    </div>
+</div>
+
+<!-- Mandate Detail Modal -->
+<div id="mandateDetailModal" class="modal-overlay" style="display:none;" onclick="if(event.target===this)closeModal(this.id)">
+    <div class="modal-box detail-modal">
+        <div class="modal-header">
+            <h2 id="mandateDetailTitle">Mandate Detail</h2>
+            <button class="modal-close" onclick="closeModal('mandateDetailModal')">&times;</button>
+        </div>
+        <div class="modal-scroll" id="mandateDetailContent"></div>
+    </div>
+</div>
+
+<!-- Sync Details Modal -->
+<div id="syncDetailsModal" class="modal-overlay" style="display:none;" onclick="if(event.target===this)closeModal(this.id)">
+    <div class="modal-box sync-details-modal">
+        <div class="modal-header">
+            <h2 id="syncDetailsTitle">Last Sync Details</h2>
+            <button class="modal-close" onclick="closeModal('syncDetailsModal')">&times;</button>
+        </div>
+        <div class="modal-scroll">
+            <pre id="syncDetailsContent" class="sync-details-pre"></pre>
+            <div id="syncHistoryContainer" style="display:none;">
+                <hr style="border:none; border-top:1px solid var(--border); margin:16px 0;">
+                <div id="syncHistoryContent"></div>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn-sm btn-outline" id="syncHistoryToggleBtn" onclick="toggleSyncHistory()" style="margin-right:auto;">Show History</button>
+            <button class="btn-sm" onclick="copySyncDetails()">Copy to Clipboard</button>
+            <button class="btn-sm btn-outline" onclick="closeModal('syncDetailsModal')">Close</button>
+        </div>
+    </div>
+</div>
+
+<!-- Full Sync Purge Confirmation Modal -->
+<div id="purgeSyncModal" class="modal-overlay" style="display:none;">
+    <div class="modal-box" style="max-width:480px;">
+        <div class="modal-header">
+            <h2 style="display:flex;align-items:center;gap:8px;">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--orange)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+                    <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+                </svg>
+                Full Sync Warning
+            </h2>
+            <button class="modal-close" onclick="closePurgeSyncModal()">&times;</button>
+        </div>
+        <div style="padding:20px;">
+            <p style="margin:0 0 12px;"><strong>All existing <span id="purgeDataTypeLabel"></span> data will be deleted</strong> and re-downloaded from Qualys.</p>
+            <p style="margin:0 0 12px; color:var(--text-2); font-size:13px;">This includes all locally cached records and search indexes for this data type. This action cannot be undone.</p>
+            <p style="margin:0; color:var(--text-2); font-size:13px;">Use this when switching Qualys tenants or if data has become inconsistent.</p>
+        </div>
+        <div class="modal-footer">
+            <button class="btn-sm btn-outline" onclick="closePurgeSyncModal()">Cancel</button>
+            <button class="btn-sm" id="purgeSyncContinueBtn" style="background:var(--orange);border-color:var(--orange);">Purge &amp; Re-download</button>
+        </div>
+    </div>
+</div>
+
+<!-- Delta Sync / Schedule Modal -->
+<div id="deltaSyncModal" class="modal-overlay" style="display:none;" onclick="if(event.target===this)closeModal(this.id)">
+    <div class="modal-box" style="max-width:440px;">
+        <div class="modal-header">
+            <h2 id="deltaSyncModalTitle">Delta Sync</h2>
+            <button class="modal-close" onclick="closeModal('deltaSyncModal')">&times;</button>
+        </div>
+        <div style="padding:20px;">
+            <div id="deltaSyncExisting" style="display:none;margin-bottom:14px;padding:10px 14px;background:var(--accent-dim);border-radius:var(--radius-sm);font-size:12px;color:var(--accent);">
+                <strong>Currently scheduled:</strong> <span id="deltaSyncExistingInfo"></span>
+            </div>
+            <label class="radio-option">
+                <input type="radio" name="deltaSyncMode" value="once" checked onchange="toggleScheduleOptions()">
+                <span>Run once (now)</span>
+            </label>
+            <label class="radio-option">
+                <input type="radio" name="deltaSyncMode" value="schedule" onchange="toggleScheduleOptions()">
+                <span>Schedule recurring</span>
+            </label>
+            <div id="scheduleOptions" class="schedule-options" style="display:none;">
+                <div class="form-row" style="margin-bottom:12px;">
+                    <div class="form-group" style="flex:1;margin-bottom:0;">
+                        <label>Start Date</label>
+                        <input type="date" id="schedStartDate">
+                    </div>
+                    <div class="form-group" style="flex:1;margin-bottom:0;">
+                        <label>Start Time</label>
+                        <input type="time" id="schedStartTime" value="02:00">
+                    </div>
+                </div>
+                <div style="font-size:11px;color:var(--text-2);margin-bottom:14px;" id="schedTzDisplay"></div>
+                <label style="margin-bottom:8px;">Frequency</label>
+                <label class="radio-option"><input type="radio" name="schedFreq" value="2x_week"><span>Twice a week</span></label>
+                <label class="radio-option"><input type="radio" name="schedFreq" value="1x_week" checked><span>Once a week <span class="optional">(Recommended)</span></span></label>
+                <label class="radio-option"><input type="radio" name="schedFreq" value="2x_month"><span>Twice a month</span></label>
+                <label class="radio-option"><input type="radio" name="schedFreq" value="1x_month"><span>Once a month</span></label>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn-sm btn-outline" onclick="closeModal('deltaSyncModal')">Cancel</button>
+            <button class="btn-sm btn-primary" onclick="confirmDeltaSync()" style="padding:6px 18px;">Confirm</button>
+        </div>
+    </div>
+</div>
+
+<script src="/static/js/chart.min.js"></script>
+<script src="/static/js/app.js?v={{ cache_bust }}"></script>
+<div id="buildStamp" style="position:fixed;bottom:4px;right:8px;font-size:10px;color:#555;opacity:0.6;pointer-events:none;z-index:9999;">build {{ cache_bust }}</div>
+</body>
+</html>

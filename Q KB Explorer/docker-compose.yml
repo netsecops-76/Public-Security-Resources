@@ -1,0 +1,25 @@
+services:
+  q-kb-explorer:
+    build: .
+    container_name: q-kb-explorer
+    # Port 5000 conflicts with AirPlay Receiver on macOS Monterey+
+    # Access at http://localhost:5051
+    ports:
+      - "5051:5000"
+    environment:
+      - FLASK_ENV=production
+    restart: unless-stopped
+    # Credential vault: key and data on SEPARATE volumes for security.
+    # An attacker needs both volumes to decrypt stored passwords.
+    # SQLite database lives on the data volume alongside vault.json.
+    volumes:
+      - qkbe-keys:/keys    # AES-256 encryption key (.vault_key.bin)
+      - qkbe-data:/data    # Encrypted vault (vault.json) + SQLite (qkbe.db)
+    # For development, also mount the app directory:
+    # - ./app:/app/app
+
+volumes:
+  qkbe-keys:
+    name: qkbe-keys
+  qkbe-data:
+    name: qkbe-data
