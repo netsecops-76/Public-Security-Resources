@@ -11,17 +11,20 @@ let _sessionTimeoutInterval = null;
 const VAULT_AUTH_COOKIE = "qkbe-vault-unlocked";
 
 function hasVaultCookie() {
-    return document.cookie.split(";").some(c => c.trim().startsWith(VAULT_AUTH_COOKIE + "="));
+    // Cookie is HttpOnly so not readable via JS — track auth state in localStorage
+    return localStorage.getItem("qkbe_vault_unlocked_at") !== null;
 }
-function setVaultCookie(maxAgeSeconds) {
-    let cookie = VAULT_AUTH_COOKIE + "=1; path=/; SameSite=Strict";
-    if (maxAgeSeconds) cookie += "; max-age=" + maxAgeSeconds;
-    document.cookie = cookie;
+function markVaultAuthenticated() {
+    // Called after successful server-side verify (server sets HttpOnly cookie)
     localStorage.setItem("qkbe_vault_unlocked_at", Date.now().toString());
 }
-function clearVaultCookie() {
-    document.cookie = VAULT_AUTH_COOKIE + "=; path=/; SameSite=Strict; max-age=0";
+function clearVaultState() {
+    // Server clears the HttpOnly cookie via /api/auth/logout
     localStorage.removeItem("qkbe_vault_unlocked_at");
+    fetch("/api/auth/logout", {
+        method: "POST",
+        headers: { "X-Requested-With": "QKBE" },
+    }).catch(() => {});
 }
 
 // ─── Session Timeout ────────────────────────────────────────────────────
@@ -52,7 +55,7 @@ function initSessionTimeout() {
         if (Date.now() - unlockedAt >= timeoutMs) {
             clearInterval(_sessionTimeoutInterval);
             _sessionTimeoutInterval = null;
-            clearVaultCookie();
+            clearVaultState();
             showToast("Session expired — please re-authenticate", "info");
             fetch("/api/credentials")
                 .then(r => r.json())
@@ -64,13 +67,24 @@ function initSessionTimeout() {
     }, 30000);
 }
 
+function _updateServerSessionTimeout(seconds) {
+    // Update the server-side cookie max_age for session timeout
+    if (hasVaultCookie()) {
+        fetch("/api/auth/session", {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json", "X-Requested-With": "QKBE" },
+            body: JSON.stringify({ max_age: seconds }),
+        }).catch(() => {});
+    }
+}
+
 function onSessionTimeoutToggle(checked) {
     document.getElementById("sessionTimeoutSliderGroup").style.display = checked ? "block" : "none";
     saveSettings();
     initSessionTimeout();
     if (checked && hasVaultCookie()) {
         const minutes = parseInt(document.getElementById("sessionTimeoutSlider").value, 10);
-        setVaultCookie(minutes * 60);
+        _updateServerSessionTimeout(minutes * 60);
     }
 }
 
@@ -79,15 +93,15 @@ function onSessionTimeoutSlider(value) {
     document.getElementById("sessionTimeoutDisplay").textContent = formatTimeout(minutes);
     saveSettings();
     initSessionTimeout();
-    if (hasVaultCookie()) {
-        setVaultCookie(minutes * 60);
-    }
+    _updateServerSessionTimeout(minutes * 60);
 }
 
 async function apiFetch(url, options = {}) {
+    // Merge CSRF header into all requests
+    options.headers = Object.assign({ "X-Requested-With": "QKBE" }, options.headers || {});
     const resp = await fetch(url, options);
     if (resp.status === 401) {
-        clearVaultCookie();
+        clearVaultState();
         try {
             const creds = await fetch("/api/credentials").then(r => r.json());
             if (Array.isArray(creds) && creds.length > 0) showVaultAuth(creds);
@@ -929,25 +943,26 @@ async function verifyVaultAuth() {
         return;
     }
     try {
+        // Include session timeout in verify request so server sets cookie max_age
+        const saved = localStorage.getItem("qkbe_settings");
+        let maxAge = null;
+        if (saved) {
+            try {
+                const st = JSON.parse(saved);
+                if (st.sessionTimeout && st.sessionTimeout.enabled) {
+                    maxAge = st.sessionTimeout.minutes * 60;
+                }
+            } catch (e) { /* ignore */ }
+        }
         const resp = await apiFetch("/api/credentials/verify", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ id: credId, password }),
+            body: JSON.stringify({ id: credId, password, max_age: maxAge }),
         });
         const result = await resp.json();
         if (result.verified) {
-            // Set cookie with session timeout if configured
-            const saved = localStorage.getItem("qkbe_settings");
-            let timeoutSec = null;
-            if (saved) {
-                try {
-                    const st = JSON.parse(saved);
-                    if (st.sessionTimeout && st.sessionTimeout.enabled) {
-                        timeoutSec = st.sessionTimeout.minutes * 60;
-                    }
-                } catch (e) { /* ignore */ }
-            }
-            setVaultCookie(timeoutSec);
+            // Server set the HttpOnly cookie — mark local auth state
+            markVaultAuthenticated();
             document.getElementById("vaultAuthModal").style.display = "none";
             showToast("Identity verified", "success");
             await initApp();

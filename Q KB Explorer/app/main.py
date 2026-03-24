@@ -10,11 +10,13 @@ import csv
 import io
 import logging
 import os
+import secrets
 import threading
 import time
 import requests as http_requests
 from flask import Flask, render_template, request, jsonify, make_response
-from flask_cors import CORS
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 from app.vault import (
     list_credentials, save_credential, update_credential, delete_credential,
     verify_password, get_credential_for_api,
@@ -38,7 +40,7 @@ from app.scheduler import init_scheduler, add_schedule, remove_schedule, get_sch
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-CORS(app)
+limiter = Limiter(get_remote_address, app=app, default_limits=[])
 
 # Initialize SQLite on startup
 with app.app_context():
@@ -50,12 +52,25 @@ with app.app_context():
 
 # ─── Vault Auth Gate ──────────────────────────────────────────────────────
 VAULT_AUTH_COOKIE = "qkbe-vault-unlocked"
+_COOKIE_SECURE = os.environ.get("QKBE_TLS_ENABLED") == "1"
+
+# In-memory session store: token → True (sessions clear on server restart)
+_active_sessions: dict[str, bool] = {}
 
 _AUTH_EXEMPT_PATHS = {
     "/api/credentials",
     "/api/credentials/verify",
     "/api/platforms",
     "/api/auth/logout",
+    "/api/auth/session",
+}
+
+# Paths exempt from CSRF header requirement (credential setup before app is usable)
+_CSRF_EXEMPT_PATHS = {
+    "/api/credentials",
+    "/api/credentials/verify",
+    "/api/auth/logout",
+    "/api/auth/session",
 }
 
 
@@ -68,19 +83,26 @@ def vault_auth_gate():
     if path.startswith("/static/") or not path.startswith("/api/"):
         return None
 
-    # Exempt API paths — always allowed
+    # Exempt API paths — always allowed (auth check)
     if path in _AUTH_EXEMPT_PATHS:
-        return None
+        pass  # skip auth check but still apply CSRF below for non-exempt
+    else:
+        # If vault is empty, skip the gate (first-time users)
+        if len(list_credentials()) == 0:
+            pass  # skip auth check
+        else:
+            # Validate session token from cookie
+            token = request.cookies.get(VAULT_AUTH_COOKIE)
+            if not token or token not in _active_sessions:
+                return jsonify({"error": "Vault authentication required"}), 401
 
-    # If vault is empty, skip the gate (first-time users)
-    if len(list_credentials()) == 0:
-        return None
+    # CSRF: Require X-Requested-With header on state-changing requests
+    if request.method in ("POST", "PATCH", "DELETE"):
+        if path not in _CSRF_EXEMPT_PATHS:
+            if not request.headers.get("X-Requested-With"):
+                return jsonify({"error": "Missing required header"}), 403
 
-    # Check for unlock cookie
-    if request.cookies.get(VAULT_AUTH_COOKIE):
-        return None
-
-    return jsonify({"error": "Vault authentication required"}), 401
+    return None
 
 
 # Track active sync threads
@@ -138,7 +160,8 @@ def credentials_list():
     try:
         return jsonify(list_credentials())
     except Exception as e:
-        return jsonify({"error": "Failed to load vault: " + str(e)}), 500
+        logger.exception("Failed to load vault")
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route("/api/credentials", methods=["POST"])
@@ -163,7 +186,8 @@ def credentials_save():
                                   display_name=display_name)
         return jsonify(result)
     except Exception as e:
-        return jsonify({"error": "Failed to save credential: " + str(e)}), 500
+        logger.exception("Failed to save credential")
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route("/api/credentials/<cred_id>", methods=["PATCH"])
@@ -181,7 +205,8 @@ def credentials_update(cred_id):
             return jsonify({"error": "Credential not found"}), 404
         return jsonify(result)
     except Exception as e:
-        return jsonify({"error": "Failed to update credential: " + str(e)}), 500
+        logger.exception("Failed to update credential %s", cred_id)
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route("/api/credentials/<cred_id>", methods=["DELETE"])
@@ -192,30 +217,64 @@ def credentials_delete(cred_id):
             return jsonify({"deleted": True, "id": cred_id})
         return jsonify({"error": "Credential not found"}), 404
     except Exception as e:
-        return jsonify({"error": "Failed to delete credential: " + str(e)}), 500
+        logger.exception("Failed to delete credential %s", cred_id)
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route("/api/credentials/verify", methods=["POST"])
+@limiter.limit("5/minute")
 def credentials_verify():
     """Verify a password against a stored credential."""
     data = request.json or {}
     cred_id = data.get("id", "")
     password = data.get("password", "")
+    max_age = data.get("max_age")  # Optional session timeout in seconds
     if not cred_id or not password:
         return jsonify({"verified": False, "error": "ID and password required"}), 400
     try:
         if verify_password(cred_id, password):
-            return jsonify({"verified": True})
+            token = secrets.token_urlsafe(32)
+            _active_sessions[token] = True
+            resp = jsonify({"verified": True})
+            resp.set_cookie(
+                VAULT_AUTH_COOKIE, token,
+                httponly=True, secure=_COOKIE_SECURE,
+                samesite="Strict", path="/",
+                max_age=int(max_age) if max_age else None,
+            )
+            return resp
         return jsonify({"verified": False, "error": "Incorrect password"}), 401
     except Exception as e:
-        return jsonify({"verified": False, "error": "Vault error: " + str(e)}), 500
+        logger.exception("Vault verification error")
+        return jsonify({"verified": False, "error": "Internal server error"}), 500
 
 
 @app.route("/api/auth/logout", methods=["POST"])
 def auth_logout():
-    """Clear the vault unlock cookie."""
+    """Clear the vault unlock cookie and invalidate session."""
+    token = request.cookies.get(VAULT_AUTH_COOKIE)
+    if token:
+        _active_sessions.pop(token, None)
     resp = jsonify({"logged_out": True})
     resp.delete_cookie(VAULT_AUTH_COOKIE, path="/", samesite="Strict")
+    return resp
+
+
+@app.route("/api/auth/session", methods=["PATCH"])
+def auth_session_update():
+    """Update session cookie expiry (for session timeout changes)."""
+    token = request.cookies.get(VAULT_AUTH_COOKIE)
+    if not token or token not in _active_sessions:
+        return jsonify({"error": "Not authenticated"}), 401
+    data = request.json or {}
+    max_age = data.get("max_age")
+    resp = jsonify({"ok": True})
+    resp.set_cookie(
+        VAULT_AUTH_COOKIE, token,
+        httponly=True, secure=_COOKIE_SECURE,
+        samesite="Strict", path="/",
+        max_age=int(max_age) if max_age else None,
+    )
     return resp
 
 
@@ -278,7 +337,8 @@ def test_connection():
     except http_requests.exceptions.ConnectionError:
         return jsonify({"success": False, "error": f"Cannot reach {api_base}"}), 502
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        logger.exception("Connection test failed")
+        return jsonify({"success": False, "error": "Internal server error"}), 500
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -324,8 +384,9 @@ def sync_status():
             status[dtype]["syncing"] = thread is not None and thread.is_alive()
             status[dtype]["needs_full_refresh"] = SyncEngine.needs_full_refresh(dtype)
         return jsonify(status)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        logger.exception("Request failed: %s %s", request.method, request.path)
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route("/api/sync/<data_type>", methods=["POST"])
@@ -431,8 +492,9 @@ def list_schedules():
     """List all active sync schedules."""
     try:
         return jsonify(get_schedule_info())
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        logger.exception("Request failed: %s %s", request.method, request.path)
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route("/api/schedules/<data_type>", methods=["POST"])
@@ -458,8 +520,9 @@ def create_schedule(data_type):
         return jsonify({"ok": True, "schedule": result})
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        logger.exception("Request failed: %s %s", request.method, request.path)
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route("/api/schedules/<data_type>", methods=["DELETE"])
@@ -486,8 +549,9 @@ def qids_search():
             per_page=int(request.args.get("per_page", 50)),
         )
         return jsonify(result)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        logger.exception("Request failed: %s %s", request.method, request.path)
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route("/api/qids/filter-values")
@@ -497,8 +561,9 @@ def qid_filter_values():
         field = request.args.get("field", "")
         q = request.args.get("q", "")
         return jsonify(get_qid_filter_values(field, q))
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        logger.exception("Request failed: %s %s", request.method, request.path)
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route("/api/qids/<int:qid>")
@@ -509,8 +574,9 @@ def qids_detail(qid):
         if not vuln:
             return jsonify({"error": "QID not found"}), 404
         return jsonify(vuln)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        logger.exception("Request failed: %s %s", request.method, request.path)
+        return jsonify({"error": "Internal server error"}), 500
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -537,8 +603,9 @@ def cids_search():
             per_page=int(request.args.get("per_page", 50)),
         )
         return jsonify(result)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        logger.exception("Request failed: %s %s", request.method, request.path)
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route("/api/cids/filter-values")
@@ -548,8 +615,9 @@ def cid_filter_values():
         field = request.args.get("field", "")
         q = request.args.get("q", "")
         return jsonify(get_cid_filter_values(field, q))
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        logger.exception("Request failed: %s %s", request.method, request.path)
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route("/api/cids/<int:cid>")
@@ -560,8 +628,9 @@ def cids_detail(cid):
         if not control:
             return jsonify({"error": "CID not found"}), 404
         return jsonify(control)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        logger.exception("Request failed: %s %s", request.method, request.path)
+        return jsonify({"error": "Internal server error"}), 500
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -596,8 +665,9 @@ def policies_search():
             per_page=int(request.args.get("per_page", 50)),
         )
         return jsonify(result)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        logger.exception("Request failed: %s %s", request.method, request.path)
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route("/api/policies", methods=["DELETE"])
@@ -622,8 +692,9 @@ def policy_filter_values():
         field = request.args.get("field", "")
         q = request.args.get("q", "")
         return jsonify(get_policy_filter_values(field, q))
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        logger.exception("Request failed: %s %s", request.method, request.path)
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route("/api/policies/<int:policy_id>")
@@ -634,8 +705,9 @@ def policies_detail(policy_id):
         if not policy:
             return jsonify({"error": "Policy not found"}), 404
         return jsonify(policy)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        logger.exception("Request failed: %s %s", request.method, request.path)
+        return jsonify({"error": "Internal server error"}), 500
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -678,8 +750,8 @@ def policy_export(policy_id):
         logger.info("Policy export %d: success — %s bytes stored", policy_id, f"{xml_size:,}")
         return jsonify({"exported": True, "policy_id": policy_id, "xml_size": xml_size})
     except Exception as e:
-        logger.exception("Policy export %d: exception — %s", policy_id, e)
-        return jsonify({"error": str(e)}), 500
+        logger.exception("Policy export %d failed", policy_id)
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route("/api/policies/<int:policy_id>/download-xml")
@@ -716,8 +788,8 @@ def policy_report(policy_id):
             return jsonify({"error": "No exported XML for this policy. Export it first."}), 404
         return jsonify(data)
     except Exception as e:
-        logger.error("Policy report %d: %s", policy_id, e)
-        return jsonify({"error": str(e)}), 500
+        logger.exception("Policy report %d failed", policy_id)
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route("/api/policies/<int:policy_id>/report-pdf")
@@ -730,8 +802,8 @@ def policy_report_pdf(policy_id):
     try:
         return _policy_report_pdf(data)
     except Exception as e:
-        logger.error("Policy report PDF %d: %s", policy_id, e)
-        return jsonify({"error": str(e)}), 500
+        logger.exception("Policy report PDF %d failed", policy_id)
+        return jsonify({"error": "Internal server error"}), 500
 
 
 def _policy_report_pdf(report_data):
@@ -1110,8 +1182,8 @@ def policy_upload():
             "data": resp_data,
         })
     except Exception as e:
-        logger.exception("Policy import %s: exception — %s", source_policy_id, e)
-        return jsonify({"error": str(e)}), 500
+        logger.exception("Policy import %s failed", source_policy_id)
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route("/api/policies/stale-exports")
@@ -1119,8 +1191,9 @@ def stale_exports():
     """List policies where export is older than last modification."""
     try:
         return jsonify(get_stale_exports())
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        logger.exception("Request failed: %s %s", request.method, request.path)
+        return jsonify({"error": "Internal server error"}), 500
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1140,8 +1213,9 @@ def mandates_search():
             per_page=int(request.args.get("per_page", 50)),
         )
         return jsonify(result)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        logger.exception("Request failed: %s %s", request.method, request.path)
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route("/api/mandates/filter-values")
@@ -1151,8 +1225,9 @@ def mandate_filter_values():
         field = request.args.get("field", "")
         q = request.args.get("q", "")
         return jsonify(get_mandate_filter_values(field, q))
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        logger.exception("Request failed: %s %s", request.method, request.path)
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route("/api/mandates/<int:mandate_id>")
@@ -1163,8 +1238,9 @@ def mandates_detail(mandate_id):
         if not mandate:
             return jsonify({"error": "Mandate not found"}), 404
         return jsonify(mandate)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        logger.exception("Request failed: %s %s", request.method, request.path)
+        return jsonify({"error": "Internal server error"}), 500
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1176,8 +1252,9 @@ def dashboard_stats():
     """Aggregated statistics for the Dashboard tab."""
     try:
         return jsonify(get_dashboard_stats())
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        logger.exception("Request failed: %s %s", request.method, request.path)
+        return jsonify({"error": "Internal server error"}), 500
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1351,8 +1428,9 @@ def export_qids_csv():
                 r.get("supported_modules", ""),
             ])
         return _csv_response(rows, headers, "qkbe-qids-export.csv")
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        logger.exception("Request failed: %s %s", request.method, request.path)
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route("/api/export/cids/csv")
@@ -1369,8 +1447,9 @@ def export_cids_csv():
                 r.get("sub_category"), r.get("criticality_label"), r.get("check_type"),
             ])
         return _csv_response(rows, headers, "qkbe-cids-export.csv")
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        logger.exception("Request failed: %s %s", request.method, request.path)
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route("/api/export/policies/csv")
@@ -1388,8 +1467,9 @@ def export_policies_csv():
                 r.get("last_modified_datetime"),
             ])
         return _csv_response(rows, headers, "qkbe-policies-export.csv")
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        logger.exception("Request failed: %s %s", request.method, request.path)
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route("/api/export/mandates/csv")
@@ -1408,8 +1488,9 @@ def export_mandates_csv():
                 r.get("released_date"), r.get("last_modified_date"),
             ])
         return _csv_response(rows, headers, "qkbe-mandates-export.csv")
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        logger.exception("Request failed: %s %s", request.method, request.path)
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route("/api/export/mandate-map/csv")
@@ -1431,8 +1512,9 @@ def export_mandate_map_csv():
                 r.get("policy_id"), r.get("policy_title"),
             ])
         return _csv_response(rows, headers, "qkbe-mandate-compliance-map.csv")
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        logger.exception("Request failed: %s %s", request.method, request.path)
+        return jsonify({"error": "Internal server error"}), 500
 
 
 # ─── PDF Export Routes ─────────────────────────────────────────────────────
@@ -1455,8 +1537,9 @@ def export_qids_pdf():
             ])
         return _pdf_response("Q KB Explorer — QID Export", headers, rows,
                              "qkbe-qids-export.pdf")
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        logger.exception("Request failed: %s %s", request.method, request.path)
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route("/api/export/cids/pdf")
@@ -1474,8 +1557,9 @@ def export_cids_pdf():
             ])
         return _pdf_response("Q KB Explorer — CID Export", headers, rows,
                              "qkbe-cids-export.pdf")
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        logger.exception("Request failed: %s %s", request.method, request.path)
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route("/api/export/policies/pdf")
@@ -1494,8 +1578,9 @@ def export_policies_pdf():
             ])
         return _pdf_response("Q KB Explorer — Policy Export", headers, rows,
                              "qkbe-policies-export.pdf")
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        logger.exception("Request failed: %s %s", request.method, request.path)
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route("/api/export/mandates/pdf")
@@ -1514,5 +1599,6 @@ def export_mandates_pdf():
             ])
         return _pdf_response("Q KB Explorer — Mandate Export", headers, rows,
                              "qkbe-mandates-export.pdf")
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        logger.exception("Request failed: %s %s", request.method, request.path)
+        return jsonify({"error": "Internal server error"}), 500

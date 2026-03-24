@@ -39,6 +39,7 @@ GUNICORN_ARGS="--bind ${BIND}:${PORT} --workers ${WORKERS} --timeout 660 --prelo
 if [ -f "$CERT" ] && [ -f "$KEY" ]; then
     echo "[QKBE] TLS enabled — cert: $CERT  key: $KEY"
     GUNICORN_ARGS="--certfile ${CERT} --keyfile ${KEY} ${GUNICORN_ARGS}"
+    export QKBE_TLS_ENABLED=1
     echo "[QKBE] Listening on https://${BIND}:${PORT}"
 else
     echo "[QKBE] No TLS certs found — running plain HTTP"

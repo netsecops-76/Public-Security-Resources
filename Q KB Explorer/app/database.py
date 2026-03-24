@@ -18,6 +18,24 @@ from collections import defaultdict
 from contextlib import contextmanager
 from datetime import datetime
 
+import bleach
+
+# Allowlist for HTML tags from Qualys KB fields (diagnosis, consequence, solution)
+_SAFE_TAGS = [
+    "p", "br", "a", "b", "i", "u", "ul", "ol", "li",
+    "table", "tr", "td", "th", "thead", "tbody",
+    "strong", "em", "code", "pre", "div", "span",
+    "h1", "h2", "h3", "h4", "h5", "h6", "hr", "font",
+]
+_SAFE_ATTRS = {"a": ["href", "target"], "font": ["color", "size"]}
+
+
+def _sanitize_html(value: str | None) -> str | None:
+    """Strip unsafe HTML from Qualys KB fields while preserving formatting."""
+    if not value:
+        return value
+    return bleach.clean(value, tags=_SAFE_TAGS, attributes=_SAFE_ATTRS, strip=True)
+
 logger = logging.getLogger(__name__)
 
 DB_PATH = os.environ.get("QKBE_DB_PATH", "/data/qkbe.db")
@@ -421,7 +439,7 @@ def update_sync_state(data_type: str, is_full: bool, credential_id: str | None =
     with get_db() as conn:
         # Get current record count
         table_map = {"qids": "vulns", "cids": "controls", "policies": "policies", "mandates": "mandates"}
-        table = table_map.get(data_type, data_type)
+        table = table_map[data_type]
         count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
 
         if is_full:
@@ -651,9 +669,9 @@ def upsert_vuln(vuln: dict):
                 1 if str(vuln.get("PATCHABLE", "")).lower() in ("1", "true") else 0,
                 vuln.get("PATCH_PUBLISHED_DATE"),
                 1 if str(vuln.get("PCI_FLAG", "")).lower() in ("1", "true") else 0,
-                vuln.get("DIAGNOSIS"),
-                vuln.get("CONSEQUENCE"),
-                vuln.get("SOLUTION"),
+                _sanitize_html(vuln.get("DIAGNOSIS")),
+                _sanitize_html(vuln.get("CONSEQUENCE")),
+                _sanitize_html(vuln.get("SOLUTION")),
                 float(cvss_base) if cvss_base else None,
                 float(cvss_temporal) if cvss_temporal else None,
                 cvss_vector,
