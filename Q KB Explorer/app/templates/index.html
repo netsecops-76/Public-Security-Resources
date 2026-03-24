@@ -399,7 +399,6 @@
                 <h2>Policy Compliance — Policies</h2>
                 <div class="export-actions" id="policyExportActions" style="display:none;">
                     <button class="btn-sm btn-outline" onclick="exportCSV('policies')" title="Export to CSV">CSV</button>
-                    <button class="btn-sm btn-outline" onclick="exportPDF('policies')" title="Export to PDF">PDF</button>
                     <button class="btn-sm btn-outline btn-select-mode" id="policySelectBtn" onclick="enterPolicySelectMode()" title="Select policies for deletion">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
                         Select
@@ -519,8 +518,6 @@
             <h2>COMPLIANCE MANDATES — FRAMEWORKS</h2>
             <div class="export-actions" id="mandateExportActions" style="display:none;">
                 <button class="btn-sm btn-outline" onclick="exportCSV('mandates')" title="Export to CSV">CSV</button>
-                <button class="btn-sm btn-outline" onclick="exportPDF('mandates')" title="Export to PDF">PDF</button>
-                <button class="btn-sm btn-outline" onclick="exportMandateMap()" title="Export compliance mapping">Map</button>
             </div>
             <span class="sync-badge" id="mandateCount">0 Mandates</span>
         </div>
@@ -856,7 +853,7 @@
                     <li>Click the <strong>Select</strong> button in the QID or CID tab header to enter select mode.</li>
                     <li>Check individual items or use Select All, then export as CSV.</li>
                     <li>Bulk exports include full detail fields (CVEs, diagnosis, solution, etc.).</li>
-                    <li>CSV exports are unlimited. PDF export is available for Policies and Mandates.</li>
+                    <li>CSV exports are unlimited across all tabs.</li>
                 </ul>
             </div>
 
@@ -1071,6 +1068,7 @@
             <button class="modal-close" onclick="closeModal('deltaSyncModal')">&times;</button>
         </div>
         <div style="padding:20px;">
+            <div id="deltaSyncCredInfo" style="margin-bottom:10px;font-size:12px;opacity:0.7;display:none;"></div>
             <div id="deltaSyncExisting" style="display:none;margin-bottom:14px;padding:10px 14px;background:var(--accent-dim);border-radius:var(--radius-sm);font-size:12px;color:var(--accent);">
                 <strong>Currently scheduled:</strong> <span id="deltaSyncExistingInfo"></span>
             </div>

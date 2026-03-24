@@ -53,8 +53,8 @@
 | GET | `/api/export/policies/csv` | Export filtered policies to CSV | Yes |
 | GET | `/api/export/mandates/csv` | Export filtered mandates to CSV | Yes |
 | GET | `/api/export/mandate-map/csv` | Export mandate compliance mapping CSV | Yes |
-| GET | `/api/export/policies/pdf` | Export filtered policies to PDF | Yes |
-| GET | `/api/export/mandates/pdf` | Export filtered mandates to PDF | Yes |
+| GET | `/api/export/policies/pdf` | Export filtered policies to PDF (backend only, no UI) | Yes |
+| GET | `/api/export/mandates/pdf` | Export filtered mandates to PDF (backend only, no UI) | Yes |
 
 ---
 
@@ -248,17 +248,17 @@
 
 All export endpoints accept the same filter params as their corresponding search endpoints.
 
-| Endpoint | Format | Filename |
-|----------|--------|----------|
-| GET `/api/export/qids/csv` | CSV | qkbe-qids-export.csv |
-| GET `/api/export/cids/csv` | CSV | qkbe-cids-export.csv |
-| GET `/api/export/policies/csv` | CSV | qkbe-policies-export.csv |
-| GET `/api/export/policies/pdf` | PDF | qkbe-policies-export.pdf |
-| GET `/api/export/mandates/csv` | CSV | qkbe-mandates-export.csv |
-| GET `/api/export/mandates/pdf` | PDF | qkbe-mandates-export.pdf |
-| GET `/api/export/mandate-map/csv` | CSV | qkbe-mandate-mapping.csv |
+| Endpoint | Format | Filename | UI Button |
+|----------|--------|----------|-----------|
+| GET `/api/export/qids/csv` | CSV | qkbe-qids-export.csv | Yes |
+| GET `/api/export/cids/csv` | CSV | qkbe-cids-export.csv | Yes |
+| GET `/api/export/policies/csv` | CSV | qkbe-policies-export.csv | Yes |
+| GET `/api/export/mandates/csv` | CSV | qkbe-mandates-export.csv | Yes |
+| GET `/api/export/mandate-map/csv` | CSV | qkbe-mandate-mapping.csv | No (backend only) |
+| GET `/api/export/policies/pdf` | PDF | qkbe-policies-export.pdf | No (backend only) |
+| GET `/api/export/mandates/pdf` | PDF | qkbe-mandates-export.pdf | No (backend only) |
 
-**Note:** PDF export is available for Policies and Mandates only. QID and CID content fields are too large for reliable PDF generation.
+**Note:** PDF export endpoints and mandate map export exist on the backend but are not exposed in the UI. The only PDF generation in the UI is the individual policy report (`/api/policies/<id>/report-pdf`).
 
 ---
 

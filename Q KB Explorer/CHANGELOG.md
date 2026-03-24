@@ -11,10 +11,10 @@
 - Supported Modules field in QID detail modal
 - Supported Modules column in QID CSV export
 - `vuln_supported_modules` database table
-- Project documentation and Dependabot configuration
+- Development Foundation onboarding (CLAUDE.md, docs/, .github/dependabot.yml)
 
 ### Changed
-- Bulk export is now CSV-only for QIDs and CIDs (PDF removed due to reportlab layout issues with large content fields)
+- All browse tabs now CSV-only (PDF removed due to reportlab layout issues with large content fields)
 - Bulk CSV export is now unlimited (removed 200-item cap)
 - Select mode now hides regular export buttons to prevent accidental full-result exports
 - Mandates sync buttons removed from Settings tab (mandates auto-extracted during CID sync, not a separate API)
@@ -25,12 +25,13 @@
 
 ### Fixed
 - Supported modules XML parsing handles string/dict/list variants from xmltodict
-- PDF export word wrap and smart column widths for Policies and Mandates
+- PDF word wrap and smart column widths for policy report PDF
 - HTML tags stripped from PDF export fields, remediation URLs preserved as plain text
 - Select mode export bug: regular CSV button was visible during select mode, causing full-result export instead of selected-only
 
 ### Removed
-- PDF export buttons from QID and CID tabs (CSV remains; PDF still available on Policies and Mandates)
+- PDF export buttons from all browse tabs (CSV remains; PDF retained only for individual policy reports)
+- Mandate Map export button from Mandates tab
 
 ### Security
 - HTML sanitization on QID diagnosis/consequence/solution fields (bleach)

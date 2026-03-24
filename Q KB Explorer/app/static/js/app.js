@@ -1237,10 +1237,19 @@ async function loadSyncStatus() {
     try {
         const resp = await apiFetch("/api/sync/status");
         const status = await resp.json();
-        updateSyncDisplay("Qid", status.qids);
-        updateSyncDisplay("Cid", status.cids);
-        updateSyncDisplay("Policy", status.policies);
-        updateMandateSyncDisplay(status.mandates, status.cids);
+
+        // Build credential lookup map for displaying usernames on sync cards
+        let credMap = {};
+        try {
+            const credResp = await fetch("/api/credentials");
+            const creds = await credResp.json();
+            if (Array.isArray(creds)) creds.forEach(c => { credMap[c.id] = c; });
+        } catch (_) {}
+
+        updateSyncDisplay("Qid", status.qids, credMap);
+        updateSyncDisplay("Cid", status.cids, credMap);
+        updateSyncDisplay("Policy", status.policies, credMap);
+        updateMandateSyncDisplay(status.mandates, status.cids, credMap);
 
         // CID dependency warning for Policies
         const cidWarning = document.getElementById("policyCidWarning");
@@ -1281,7 +1290,7 @@ const _typeToDataKey = { "Qid": "qids", "Cid": "cids", "Policy": "policies", "Ma
 // Reverse map: API data type → display key for updateSyncDisplay()
 const _dataKeyToDisplay = { "qids": "Qid", "cids": "Cid", "policies": "Policy", "mandates": "Mandate" };
 
-function updateSyncDisplay(type, state) {
+function updateSyncDisplay(type, state, credMap) {
     const metaEl = document.getElementById("sync" + type + "Meta");
     const countEl = document.getElementById(type.toLowerCase() + "Count");
     const dataKey = _typeToDataKey[type] || type.toLowerCase() + "s";
@@ -1302,19 +1311,40 @@ function updateSyncDisplay(type, state) {
         const sec = totalSec % 60;
         meta += "  [" + min + ":" + (sec < 10 ? "0" : "") + sec + "]";
     }
+    // Show which credential (user) was used
+    if (state.credential_id && credMap) {
+        const cred = credMap[state.credential_id];
+        if (cred) meta += " \u00B7 " + formatCredLabel(cred);
+    }
     metaEl.textContent = meta;
     if (countEl) countEl.textContent = "Total: " + count.toLocaleString();
 }
 
-function updateMandateSyncDisplay(mandateState, cidState) {
+function updateMandateSyncDisplay(mandateState, cidState, credMap) {
     const metaEl = document.getElementById("syncMandateMeta");
     const countEl = document.getElementById("mandateCount");
     const count = (mandateState && mandateState.record_count) || 0;
     _totalCounts.mandates = count;
 
-    if (count > 0 && mandateState.last_sync) {
-        const date = new Date(mandateState.last_sync).toLocaleString();
-        metaEl.textContent = count.toLocaleString() + " frameworks \u00B7 Last extracted: " + date;
+    // Mandates are extracted during CID sync (upsert_control → _extract_mandates_for_cid).
+    // Use the more recent of CID sync or mandate sync as the "last updated" date,
+    // since either operation updates mandate data.
+    const mandateTs = mandateState && mandateState.last_sync ? new Date(mandateState.last_sync) : null;
+    const cidTs = cidState && cidState.last_sync ? new Date(cidState.last_sync) : null;
+    const lastUpdated = (mandateTs && cidTs) ? (cidTs > mandateTs ? cidTs : mandateTs)
+                      : (cidTs || mandateTs);
+
+    if (count > 0 && lastUpdated) {
+        const date = lastUpdated.toLocaleString();
+        let meta = count.toLocaleString() + " frameworks \u00B7 Last updated: " + date;
+        // Show which credential was used (from CID sync since that's the source)
+        const credId = cidState && cidState.credential_id ? cidState.credential_id
+                     : (mandateState && mandateState.credential_id);
+        if (credId && credMap) {
+            const cred = credMap[credId];
+            if (cred) meta += " \u00B7 " + formatCredLabel(cred);
+        }
+        metaEl.textContent = meta;
     } else if (cidState && cidState.last_sync && count === 0) {
         metaEl.textContent = "No frameworks found in CID data \u00B7 Try a CID Full Sync";
     } else if (!cidState || !cidState.last_sync) {
@@ -3215,6 +3245,17 @@ async function showDeltaSyncModal(type) {
     // Show user's timezone
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
     document.getElementById("schedTzDisplay").textContent = "Timezone: " + tz;
+
+    // Show active credential being used
+    const credInfoEl = document.getElementById("deltaSyncCredInfo");
+    if (credInfoEl && activeCredentialId) {
+        try {
+            const creds = await fetch("/api/credentials").then(r => r.json());
+            const cred = Array.isArray(creds) ? creds.find(c => c.id === activeCredentialId) : null;
+            credInfoEl.textContent = cred ? "Credential: " + formatCredLabel(cred) : "";
+            credInfoEl.style.display = cred ? "" : "none";
+        } catch (_) { credInfoEl.style.display = "none"; }
+    }
 
     // Reset frequency to "Once a week"
     const freqRadios = document.querySelectorAll('input[name="schedFreq"]');
