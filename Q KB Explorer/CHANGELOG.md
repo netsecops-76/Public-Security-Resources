@@ -12,22 +12,42 @@
 - Supported Modules column in QID CSV export
 - `vuln_supported_modules` database table
 - Development Foundation onboarding (CLAUDE.md, docs/, .github/dependabot.yml)
+- Automatic weekly database maintenance with compressed backup, integrity check, VACUUM, ANALYZE
+- `db_maintenance_config` table, `app/maintenance.py` module (backup, restore, vacuum)
+- Database Maintenance card in Settings tab (day/time picker, last run status, backup info)
+- Startup ad-hoc maintenance: runs automatically on first container start if no previous run exists
+- Maintenance failure banner with Restore from Backup option
+- Dashboard Database Health card (DB size, maintenance status, backup info)
+- Application auto-update feature: check GitHub for new versions, download and apply updates
+- `app/updater.py` module (check, download tarball, extract, pip install, restart Gunicorn)
+- Application Updates card in Settings tab (Check for Updates, Update Now)
+- `/api/health` endpoint for Docker health checks (returns sync thread status)
+- Worker resilience: 30s frontend request timeout with unresponsive server banner (Retry/Dismiss)
+- Stuck-sync detection: warns if sync progress unchanged for 5 minutes
+- Credential (user/platform) displayed on sync status cards and delta sync modal
+- Bug/feature request form in Help tab (submits to GitHub Issues)
+- Sync dependency chain documented in Help tab (QIDs → CIDs → Policies → Mandates)
 
 ### Changed
 - All browse tabs now CSV-only (PDF removed due to reportlab layout issues with large content fields)
 - Bulk CSV export is now unlimited (removed 200-item cap)
 - Select mode now hides regular export buttons to prevent accidental full-result exports
 - Mandates sync buttons removed from Settings tab (mandates auto-extracted during CID sync, not a separate API)
-- Mandate status card now shows read-only extraction info: count, last extraction date, or prompt to sync CIDs
+- Mandate status card now shows read-only extraction info with CID sync timestamp
 - Policy sync now requires CIDs to be synced first (returns 400 with helpful message if not)
 - CID sync completion now shows toast with mandate extraction count
-- Help tab Data Sync section updated with sync dependency chain
+- Gunicorn timeout reduced from 660s to 120s (syncs run in threads, not blocking HTTP)
+- Docker health check added (polls /api/health every 30s, restarts after 3 failures)
+- Sync status uses live table counts instead of cached sync_state values
+- Mandate sync timestamps inherit from CID sync when more recent
 
 ### Fixed
 - Supported modules XML parsing handles string/dict/list variants from xmltodict
 - PDF word wrap and smart column widths for policy report PDF
 - HTML tags stripped from PDF export fields, remediation URLs preserved as plain text
-- Select mode export bug: regular CSV button was visible during select mode, causing full-result export instead of selected-only
+- Select mode export bug: regular CSV button was visible during select mode
+- Dashboard sync health for mandates showing "Never synced" despite having records
+- Mandate count showing 0 after CID sync (live count fix)
 
 ### Removed
 - PDF export buttons from all browse tabs (CSV remains; PDF retained only for individual policy reports)

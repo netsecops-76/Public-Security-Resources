@@ -50,6 +50,23 @@ with app.app_context():
         logger.info("Resolved %d policy control CIDs on startup", resolved)
     init_scheduler(app)
 
+    # Run ad-hoc maintenance on startup if no previous run exists
+    from app.database import get_maintenance_config
+    maint_config = get_maintenance_config()
+    if not maint_config.get("last_run"):
+        import threading
+        def _startup_maintenance():
+            import time
+            time.sleep(10)  # Let the app fully start first
+            from app.maintenance import run_maintenance
+            logger.info("[Startup] No previous maintenance — running ad-hoc maintenance...")
+            result = run_maintenance()
+            if result["status"] == "ok":
+                logger.info("[Startup] Ad-hoc maintenance completed in %.1fs", result["duration_s"])
+            else:
+                logger.error("[Startup] Ad-hoc maintenance failed: %s", result.get("error"))
+        threading.Thread(target=_startup_maintenance, daemon=True).start()
+
 # ─── Vault Auth Gate ──────────────────────────────────────────────────────
 VAULT_AUTH_COOKIE = "qkbe-vault-unlocked"
 _COOKIE_SECURE = os.environ.get("QKBE_TLS_ENABLED") == "1"
@@ -63,6 +80,7 @@ _AUTH_EXEMPT_PATHS = {
     "/api/platforms",
     "/api/auth/logout",
     "/api/auth/session",
+    "/api/health",
 }
 
 # Paths exempt from CSRF header requirement (credential setup before app is usable)
@@ -148,6 +166,13 @@ def index():
 @app.route("/api/platforms")
 def get_platforms():
     return jsonify(QUALYS_PLATFORMS)
+
+
+@app.route("/api/health")
+def health_check():
+    """Lightweight health check for Docker and monitoring. No auth required."""
+    syncing = {k: v.is_alive() for k, v in _active_syncs.items() if v}
+    return jsonify({"status": "ok", "syncing": syncing})
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -539,6 +564,81 @@ def delete_schedule_route(data_type):
         return jsonify({"error": "Invalid data type"}), 400
     removed = remove_schedule(data_type)
     return jsonify({"ok": True, "removed": removed})
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Routes — Database Maintenance
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.route("/api/maintenance/config")
+def maintenance_config_get():
+    """Return maintenance schedule config, last run info, and backup info."""
+    from app.database import get_maintenance_config
+    from app.maintenance import get_backup_info
+    from app.scheduler import get_maintenance_schedule_info
+    config = get_maintenance_config()
+    config["backup"] = get_backup_info()
+    sched_info = get_maintenance_schedule_info(config.get("timezone", ""))
+    config["next_run"] = sched_info
+    return jsonify(config)
+
+
+@app.route("/api/maintenance/config", methods=["POST"])
+def maintenance_config_save():
+    """Update maintenance schedule (day, time, timezone)."""
+    from app.database import save_maintenance_config
+    from app.scheduler import schedule_maintenance
+    data = request.json or {}
+    day = int(data.get("day_of_week", 0))
+    hour = int(data.get("hour", 0))
+    minute = int(data.get("minute", 0))
+    tz = data.get("timezone", "")
+    if day < 0 or day > 6:
+        return jsonify({"error": "day_of_week must be 0-6 (Sunday-Saturday)"}), 400
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        return jsonify({"error": "Invalid hour or minute"}), 400
+    config = save_maintenance_config(day, hour, minute, tz)
+    sched_info = schedule_maintenance(day, hour, minute, tz)
+    config["next_run"] = sched_info
+    return jsonify(config)
+
+
+@app.route("/api/maintenance/restore", methods=["POST"])
+def maintenance_restore():
+    """Restore database from compressed backup."""
+    from app.maintenance import restore_from_backup
+    result = restore_from_backup()
+    if result["status"] == "ok":
+        return jsonify(result)
+    return jsonify(result), 500
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Routes — Application Update
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.route("/api/update/check")
+def update_check():
+    """Check GitHub for application updates."""
+    from app.updater import check_for_updates
+    return jsonify(check_for_updates())
+
+
+@app.route("/api/update/apply", methods=["POST"])
+def update_apply():
+    """Download and apply the latest version from GitHub."""
+    from app.updater import apply_update
+    result = apply_update()
+    if result["status"] == "ok":
+        return jsonify(result)
+    return jsonify(result), 500
+
+
+@app.route("/api/update/version")
+def update_version():
+    """Return current deployed version."""
+    from app.updater import get_current_version
+    return jsonify({"version": get_current_version()})
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1344,7 +1444,24 @@ def mandates_detail(mandate_id):
 def dashboard_stats():
     """Aggregated statistics for the Dashboard tab."""
     try:
-        return jsonify(get_dashboard_stats())
+        stats = get_dashboard_stats()
+        # Add database health info
+        from app.database import DB_PATH, get_maintenance_config
+        from app.maintenance import get_backup_info
+        import os
+        db_size = os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0
+        maint = get_maintenance_config()
+        backup = get_backup_info()
+        stats["db_health"] = {
+            "size": db_size,
+            "last_maintenance": maint.get("last_run"),
+            "last_status": maint.get("last_status"),
+            "last_duration_s": maint.get("last_duration_s"),
+            "last_error": maint.get("last_error"),
+            "backup_size": backup["size"] if backup else None,
+            "backup_date": backup["modified"] if backup else None,
+        }
+        return jsonify(stats)
     except Exception:
         logger.exception("Request failed: %s %s", request.method, request.path)
         return jsonify({"error": "Internal server error"}), 500

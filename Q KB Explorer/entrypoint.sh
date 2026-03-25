@@ -32,9 +32,10 @@ WORKERS="${QKBE_WORKERS:-1}"
 
 # Single worker: sync progress lives in-memory — multiple workers would
 # cause progress/details requests to miss the worker running the sync thread.
-# Timeout 660s > longest sync page timeout (600s for QIDs) so gunicorn
-# doesn't kill the worker mid-sync.
-GUNICORN_ARGS="--bind ${BIND}:${PORT} --workers ${WORKERS} --timeout 660 --preload app.main:app"
+# Timeout 120s: syncs run in background threads (not blocking HTTP handlers),
+# so this only kills stuck *request handlers* (e.g. hung PDF generation).
+# The QID delta sync (600s) runs in a thread and won't trigger this timeout.
+GUNICORN_ARGS="--bind ${BIND}:${PORT} --workers ${WORKERS} --timeout 120 --preload app.main:app"
 
 if [ -f "$CERT" ] && [ -f "$KEY" ]; then
     echo "[QKBE] TLS enabled — cert: $CERT  key: $KEY"

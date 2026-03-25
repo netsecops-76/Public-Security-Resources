@@ -16,12 +16,15 @@ from datetime import datetime
 import pytz
 from apscheduler.schedulers.background import BackgroundScheduler
 
+from apscheduler.triggers.cron import CronTrigger
+
 from app.database import (
     get_all_schedules,
     get_schedule,
     save_schedule,
     delete_schedule as db_delete_schedule,
     update_schedule_last_run,
+    get_maintenance_config,
 )
 
 logger = logging.getLogger(__name__)
@@ -62,6 +65,9 @@ def init_scheduler(app):
             logger.info("Restored schedule for %s: %s", sched["data_type"], sched["frequency"])
         except Exception as e:
             logger.warning("Failed to restore schedule for %s: %s", sched["data_type"], e)
+
+    # Restore database maintenance schedule
+    _restore_maintenance_schedule()
 
     _scheduler.start()
     logger.info("Sync scheduler started with %d restored jobs", len(schedules))
@@ -333,3 +339,116 @@ def _format_schedule(sched: dict) -> dict:
                 pass
 
     return info
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Database Maintenance Scheduling
+# ═══════════════════════════════════════════════════════════════════════════
+
+# APScheduler day_of_week: mon=0..sun=6
+# Our DB stores: 0=Sunday..6=Saturday
+# Mapping: our 0(Sun)→6, 1(Mon)→0, 2(Tue)→1, ..., 6(Sat)→5
+_DOW_TO_APSCHEDULER = {0: 6, 1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5}
+
+_MAINTENANCE_JOB_ID = "db_maintenance"
+
+
+def _execute_maintenance():
+    """APScheduler callback — run database maintenance."""
+    from app.maintenance import run_maintenance
+    logger.info("[Maintenance] Starting scheduled database maintenance...")
+    result = run_maintenance()
+    if result["status"] == "ok":
+        logger.info("[Maintenance] Completed in %.1fs", result["duration_s"])
+    else:
+        logger.error("[Maintenance] Failed: %s", result.get("error"))
+
+
+def _restore_maintenance_schedule():
+    """Restore maintenance schedule from DB on startup."""
+    try:
+        config = get_maintenance_config()
+        if config and config.get("enabled"):
+            tz_name = config.get("timezone") or _get_system_timezone()
+            _schedule_maintenance_job(
+                config["day_of_week"], config["hour"], config["minute"], tz_name
+            )
+            logger.info("[Maintenance] Restored schedule: day=%d hour=%d:%02d tz=%s",
+                         config["day_of_week"], config["hour"], config["minute"], tz_name)
+    except Exception as e:
+        logger.warning("[Maintenance] Failed to restore schedule: %s", e)
+
+
+def schedule_maintenance(day_of_week: int, hour: int, minute: int,
+                         timezone: str) -> dict | None:
+    """Create or update the weekly maintenance schedule.
+
+    Args:
+        day_of_week: 0=Sunday..6=Saturday
+        hour: 0-23
+        minute: 0-59
+        timezone: IANA timezone name
+    """
+    _schedule_maintenance_job(day_of_week, hour, minute, timezone)
+    return get_maintenance_schedule_info(timezone)
+
+
+def _schedule_maintenance_job(day_of_week: int, hour: int, minute: int,
+                              timezone: str):
+    """Add or replace the APScheduler cron job for maintenance."""
+    if not _scheduler:
+        return
+    # Remove existing job if any
+    try:
+        _scheduler.remove_job(_MAINTENANCE_JOB_ID)
+    except Exception:
+        pass
+
+    ap_dow = _DOW_TO_APSCHEDULER.get(day_of_week, 6)  # default Sunday
+    trigger = CronTrigger(
+        day_of_week=ap_dow, hour=hour, minute=minute,
+        timezone=pytz.timezone(timezone) if timezone else pytz.utc,
+    )
+    _scheduler.add_job(
+        _execute_maintenance,
+        trigger=trigger,
+        id=_MAINTENANCE_JOB_ID,
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+
+
+def remove_maintenance_schedule():
+    """Remove the maintenance schedule."""
+    if _scheduler:
+        try:
+            _scheduler.remove_job(_MAINTENANCE_JOB_ID)
+        except Exception:
+            pass
+
+
+def get_maintenance_schedule_info(timezone: str = "") -> dict | None:
+    """Get next run time for the maintenance job."""
+    if not _scheduler:
+        return None
+    job = _scheduler.get_job(_MAINTENANCE_JOB_ID)
+    if not job or not job.next_run_time:
+        return None
+    tz_name = timezone or "UTC"
+    try:
+        local_dt = _utc_to_local(job.next_run_time, tz_name)
+        return {
+            "next_run_local": local_dt.strftime("%Y-%m-%d %I:%M %p"),
+            "next_run_utc": job.next_run_time.isoformat(),
+        }
+    except Exception:
+        return {"next_run_utc": job.next_run_time.isoformat()}
+
+
+def _get_system_timezone() -> str:
+    """Get the system's local timezone name."""
+    try:
+        import time as _time
+        return _time.tzname[0] or "UTC"
+    except Exception:
+        return "UTC"

@@ -194,6 +194,22 @@
             </table>
         </div>
     </div>
+
+    <!-- Row 5: Database Health -->
+    <div class="card">
+        <div class="card-header">
+            <h2>Database Health</h2>
+        </div>
+        <div class="card-body">
+            <div id="dbHealthContent" style="display:flex;gap:24px;flex-wrap:wrap;font-size:13px;">
+                <div><strong>DB Size:</strong> <span id="dbSize">—</span></div>
+                <div><strong>Last Maintenance:</strong> <span id="dbLastMaint">—</span></div>
+                <div><strong>Status:</strong> <span id="dbMaintStatus">—</span></div>
+                <div><strong>Duration:</strong> <span id="dbMaintDuration">—</span></div>
+                <div><strong>Backup:</strong> <span id="dbBackupInfo">—</span></div>
+            </div>
+        </div>
+    </div>
 </div>
 
 <!-- ════════════════════════════════════════════════════════════════════════ -->
@@ -733,6 +749,50 @@
         </div>
     </div>
 
+    <!-- Database Maintenance -->
+    <div class="card">
+        <div class="card-header">
+            <h2>Database Maintenance</h2>
+        </div>
+        <div class="card-body">
+            <p style="font-size:13px;opacity:0.7;margin-bottom:14px;">Automatic weekly maintenance: compressed backup, integrity check, VACUUM, ANALYZE.</p>
+            <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:14px;">
+                <label style="font-size:13px;font-weight:500;">Schedule:</label>
+                <select id="maintDay" style="padding:4px 8px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-card);color:var(--fg);font-size:13px;">
+                    <option value="0">Sunday</option>
+                    <option value="1">Monday</option>
+                    <option value="2">Tuesday</option>
+                    <option value="3">Wednesday</option>
+                    <option value="4">Thursday</option>
+                    <option value="5">Friday</option>
+                    <option value="6">Saturday</option>
+                </select>
+                <span style="font-size:13px;">at</span>
+                <input type="time" id="maintTime" value="00:00" style="padding:4px 8px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-card);color:var(--fg);font-size:13px;">
+                <span id="maintTzDisplay" style="font-size:12px;opacity:0.6;"></span>
+                <button class="btn-sm btn-primary" id="maintSaveBtn" onclick="saveMaintenanceConfig()" style="margin-left:auto;">Save Changes</button>
+            </div>
+            <div id="maintStatus" style="font-size:12px;opacity:0.7;"></div>
+            <div id="maintNextRun" style="font-size:12px;opacity:0.7;margin-top:4px;"></div>
+        </div>
+    </div>
+
+    <!-- Application Updates -->
+    <div class="card">
+        <div class="card-header">
+            <h2>Application Updates</h2>
+            <button class="btn-sm" onclick="checkForUpdates()" id="updateCheckBtn">Check for Updates</button>
+        </div>
+        <div class="card-body">
+            <div id="updateStatus" style="font-size:13px;">
+                <span style="opacity:0.7;">Click "Check for Updates" to check the latest version.</span>
+            </div>
+            <div id="updateActions" style="display:none;margin-top:12px;">
+                <button class="btn-sm btn-primary" id="updateApplyBtn" onclick="applyUpdate()">Update Now</button>
+            </div>
+        </div>
+    </div>
+
     <!-- About -->
     <div class="card">
         <div class="card-header"><h2>About</h2></div>
@@ -887,6 +947,34 @@
                     <li><strong>Sync timeout</strong> &mdash; Large datasets (100K+ QIDs) may take 10-15 minutes. Keep the browser tab open.</li>
                     <li><strong>Missing mandates</strong> &mdash; Mandates are extracted from CID sync data. Run a CID sync first.</li>
                 </ul>
+            </div>
+
+            <div class="help-section">
+                <h3>Submit a Bug Report or Feature Request</h3>
+                <p style="font-size:13px;opacity:0.7;margin-bottom:12px;">Reports are submitted as GitHub issues. You'll need a GitHub account to submit.</p>
+                <div style="display:flex;flex-direction:column;gap:10px;max-width:600px;">
+                    <div style="display:flex;gap:10px;align-items:center;">
+                        <label style="font-size:13px;font-weight:500;min-width:60px;">Type:</label>
+                        <select id="issueType" style="padding:6px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-card);color:var(--fg);font-size:13px;flex:1;">
+                            <option value="bug">Bug Report</option>
+                            <option value="feature">Feature Request</option>
+                        </select>
+                    </div>
+                    <div style="display:flex;gap:10px;align-items:center;">
+                        <label style="font-size:13px;font-weight:500;min-width:60px;">Title:</label>
+                        <input type="text" id="issueTitle" placeholder="Brief summary..." style="padding:6px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-card);color:var(--fg);font-size:13px;flex:1;">
+                    </div>
+                    <div style="display:flex;gap:10px;">
+                        <label style="font-size:13px;font-weight:500;min-width:60px;padding-top:6px;">Details:</label>
+                        <textarea id="issueBody" rows="4" placeholder="Steps to reproduce (for bugs) or description (for features)..." style="padding:6px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-card);color:var(--fg);font-size:13px;flex:1;resize:vertical;font-family:inherit;"></textarea>
+                    </div>
+                    <div style="display:flex;justify-content:flex-end;">
+                        <button class="btn-sm btn-primary" onclick="submitGitHubIssue()">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 00-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0020 4.77 5.07 5.07 0 0019.91 1S18.73.65 16 2.48a13.38 13.38 0 00-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 005 4.77a5.44 5.44 0 00-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 009 18.13V22"/></svg>
+                            Submit to GitHub
+                        </button>
+                    </div>
+                </div>
             </div>
         </div>
     </div>

@@ -1,6 +1,6 @@
 # Q KB Explorer — API Reference
 
-> Total endpoints: 50 (49 API + 1 page) | Base URL: `/api`
+> Total endpoints: 58 routes (~53 unique paths + 1 page) | Base URL: `/api`
 > Auth: Vault-based session cookie (`qkbe-vault-unlocked`, HttpOnly)
 
 ## Quick Reference Table
@@ -55,6 +55,13 @@
 | GET | `/api/export/mandate-map/csv` | Export mandate compliance mapping CSV | Yes |
 | GET | `/api/export/policies/pdf` | Export filtered policies to PDF (backend only, no UI) | Yes |
 | GET | `/api/export/mandates/pdf` | Export filtered mandates to PDF (backend only, no UI) | Yes |
+| GET | `/api/health` | Health check (sync thread status) | No |
+| GET | `/api/maintenance/config` | Maintenance schedule config and last run | Yes |
+| POST | `/api/maintenance/config` | Update maintenance schedule | Yes |
+| POST | `/api/maintenance/restore` | Restore DB from compressed backup | Yes |
+| GET | `/api/update/check` | Check GitHub for new versions | Yes |
+| POST | `/api/update/apply` | Download and apply latest version | Yes |
+| GET | `/api/update/version` | Current deployed version SHA | Yes |
 
 ---
 
@@ -259,6 +266,53 @@ All export endpoints accept the same filter params as their corresponding search
 | GET `/api/export/mandates/pdf` | PDF | qkbe-mandates-export.pdf | No (backend only) |
 
 **Note:** PDF export endpoints and mandate map export exist on the backend but are not exposed in the UI. The only PDF generation in the UI is the individual policy report (`/api/policies/<id>/report-pdf`).
+
+---
+
+### Health Check — `/api/health`
+
+#### GET `/api/health`
+- **Auth:** None (used by Docker health check)
+- **Response (200):** `{ "status": "ok", "syncing": { "qids": false, "cids": true } }`
+- **Notes:** Returns which sync threads are currently active. Polled every 30s by Docker.
+
+---
+
+### Database Maintenance — `/api/maintenance/`
+
+#### GET `/api/maintenance/config`
+- **Auth:** Yes
+- **Response (200):** `{ "day_of_week": 0, "hour": 0, "minute": 0, "timezone": "...", "last_run": "...", "last_status": "ok"|"error", "last_error": null, "last_duration_s": 4.2, "backup": { "path": "qkbe.db.bak.gz", "size": N, "modified": "..." }, "next_run": { "next_run_local": "..." } }`
+
+#### POST `/api/maintenance/config`
+- **Auth:** Yes
+- **Request body:** `{ "day_of_week": 0, "hour": 0, "minute": 0, "timezone": "America/Denver" }`
+- **Response (200):** Updated config object
+- **Notes:** `day_of_week`: 0=Sunday..6=Saturday. Reschedules the APScheduler cron job.
+
+#### POST `/api/maintenance/restore`
+- **Auth:** Yes
+- **Response (200):** `{ "status": "ok", "size": N }`
+- **Errors:** `500` if no backup exists or decompression fails
+- **Notes:** Decompresses `/data/qkbe.db.bak.gz` and replaces the current database
+
+---
+
+### Application Updates — `/api/update/`
+
+#### GET `/api/update/check`
+- **Auth:** Yes
+- **Response (200):** `{ "update_available": true, "current": "abc123...", "latest": "def456...", "latest_short": "def456", "latest_message": "...", "latest_date": "...", "commits_behind": 3 }`
+- **Notes:** Checks `github.com/netsecops-76/Public-Security-Resources` branch `Q-KB-Explorer`
+
+#### POST `/api/update/apply`
+- **Auth:** Yes
+- **Response (200):** `{ "status": "ok", "version": "...", "version_short": "...", "message": "...", "duration_s": 12.3 }`
+- **Notes:** Downloads tarball, extracts app/ files, pip installs requirements, sends SIGHUP to Gunicorn
+
+#### GET `/api/update/version`
+- **Auth:** Yes
+- **Response (200):** `{ "version": "abc123..." }`
 
 ---
 

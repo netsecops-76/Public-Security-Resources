@@ -247,6 +247,21 @@ INSERT OR IGNORE INTO sync_state (data_type) VALUES ('cids');
 INSERT OR IGNORE INTO sync_state (data_type) VALUES ('policies');
 INSERT OR IGNORE INTO sync_state (data_type) VALUES ('mandates');
 
+-- Database maintenance configuration (single-row table)
+CREATE TABLE IF NOT EXISTS db_maintenance_config (
+    id              INTEGER PRIMARY KEY CHECK (id = 1),
+    day_of_week     INTEGER DEFAULT 0,
+    hour            INTEGER DEFAULT 0,
+    minute          INTEGER DEFAULT 0,
+    timezone        TEXT DEFAULT '',
+    last_run        TEXT,
+    last_status     TEXT,
+    last_error      TEXT,
+    last_duration_s REAL,
+    enabled         INTEGER DEFAULT 1
+);
+INSERT OR IGNORE INTO db_maintenance_config (id) VALUES (1);
+
 -- FTS5 indexes for full-text search
 CREATE VIRTUAL TABLE IF NOT EXISTS vulns_fts USING fts5(
     qid, title, category, diagnosis, consequence, solution,
@@ -403,15 +418,20 @@ CREATE INDEX IF NOT EXISTS idx_mandates_publisher ON mandates(publisher);
 
 def get_sync_status() -> dict:
     """Return sync state for all data types, including elapsed time."""
+    _table_map = {"qids": "vulns", "cids": "controls", "policies": "policies", "mandates": "mandates"}
     with get_db() as conn:
         rows = conn.execute("SELECT * FROM sync_state").fetchall()
         result = {}
         for row in rows:
             dt = row["data_type"]
+            # Live count from actual table (not cached) — mandates are populated
+            # during CID sync but their sync_state.record_count isn't updated then
+            table = _table_map.get(dt)
+            live_count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] if table else (row["record_count"] or 0)
             result[dt] = {
                 "last_sync": row["last_sync_datetime"],
                 "last_full_sync": row["last_full_sync_datetime"],
-                "record_count": row["record_count"],
+                "record_count": live_count,
                 "credential_id": row["credential_id"],
             }
             # Get elapsed from last completed sync_log_run
@@ -430,6 +450,22 @@ def get_sync_status() -> dict:
                     result[dt]["elapsed_seconds"] = None
             else:
                 result[dt]["elapsed_seconds"] = None
+
+        # Mandates are extracted during CID sync — use CID sync timestamp
+        # if more recent than the mandate-specific timestamp
+        if "mandates" in result and "cids" in result:
+            m = result["mandates"]
+            c = result["cids"]
+            cid_ts = c.get("last_sync")
+            mandate_ts = m.get("last_sync")
+            if cid_ts and (not mandate_ts or cid_ts > mandate_ts):
+                m["last_sync"] = cid_ts
+                m["credential_id"] = m.get("credential_id") or c.get("credential_id")
+            cid_full = c.get("last_full_sync")
+            mandate_full = m.get("last_full_sync")
+            if cid_full and (not mandate_full or cid_full > mandate_full):
+                m["last_full_sync"] = cid_full
+
         return result
 
 
@@ -2227,3 +2263,44 @@ def get_mandate_compliance_map(mandate_id: int | None = None) -> list[dict]:
             params.append(mandate_id)
         sql += " ORDER BY m.title, mc.section_id, c.cid, p.policy_id"
         return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Database Maintenance Config
+# ═══════════════════════════════════════════════════════════════════════════
+
+def get_maintenance_config() -> dict:
+    """Return the single-row maintenance configuration."""
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM db_maintenance_config WHERE id = 1").fetchone()
+        if row:
+            return dict(row)
+        return {"id": 1, "day_of_week": 0, "hour": 0, "minute": 0,
+                "timezone": "", "enabled": 1}
+
+
+def save_maintenance_config(day_of_week: int, hour: int, minute: int,
+                            timezone: str) -> dict:
+    """Update maintenance schedule configuration."""
+    with get_db() as conn:
+        conn.execute(
+            """UPDATE db_maintenance_config
+               SET day_of_week=?, hour=?, minute=?, timezone=?
+               WHERE id=1""",
+            (day_of_week, hour, minute, timezone),
+        )
+    return get_maintenance_config()
+
+
+def update_maintenance_last_run(status: str, error: str | None,
+                                duration: float) -> None:
+    """Record the result of the last maintenance run."""
+    from datetime import datetime
+    now = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    with get_db() as conn:
+        conn.execute(
+            """UPDATE db_maintenance_config
+               SET last_run=?, last_status=?, last_error=?, last_duration_s=?
+               WHERE id=1""",
+            (now, status, error, round(duration, 1)),
+        )

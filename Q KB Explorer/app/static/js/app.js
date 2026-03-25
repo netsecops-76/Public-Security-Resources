@@ -96,10 +96,64 @@ function onSessionTimeoutSlider(value) {
     _updateServerSessionTimeout(minutes * 60);
 }
 
+// ── Server Health Detection ─────────────────────────────────────────────
+let _serverUnresponsive = false;
+const _API_TIMEOUT_MS = 30000; // 30s request timeout
+
+function _showUnresponsiveBanner() {
+    if (_serverUnresponsive) return;
+    _serverUnresponsive = true;
+    let banner = document.getElementById("serverUnresponsiveBanner");
+    if (!banner) {
+        banner = document.createElement("div");
+        banner.id = "serverUnresponsiveBanner";
+        banner.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:10000;background:#d32f2f;color:#fff;padding:10px 20px;display:flex;align-items:center;gap:12px;font-size:13px;font-weight:500;justify-content:center;";
+        banner.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>'
+            + '<span>Server is not responding. It may be restarting.</span>'
+            + '<button onclick="_retryHealth()" style="background:#fff;color:#d32f2f;border:none;padding:4px 14px;border-radius:4px;cursor:pointer;font-weight:600;font-size:12px;">Retry</button>'
+            + '<button onclick="_dismissBanner()" style="background:transparent;color:#fff;border:1px solid rgba(255,255,255,0.5);padding:4px 14px;border-radius:4px;cursor:pointer;font-size:12px;">Dismiss</button>';
+        document.body.prepend(banner);
+    }
+    banner.style.display = "flex";
+}
+
+function _dismissBanner() {
+    const banner = document.getElementById("serverUnresponsiveBanner");
+    if (banner) banner.style.display = "none";
+    _serverUnresponsive = false;
+}
+
+async function _retryHealth() {
+    try {
+        const resp = await fetch("/api/health", { signal: AbortSignal.timeout(5000) });
+        if (resp.ok) {
+            _dismissBanner();
+            showToast("Server is back online", "success");
+            loadSyncStatus();
+        }
+    } catch (_) {
+        showToast("Server still unresponsive — it may be restarting", "error");
+    }
+}
+
 async function apiFetch(url, options = {}) {
     // Merge CSRF header into all requests
     options.headers = Object.assign({ "X-Requested-With": "QKBE" }, options.headers || {});
-    const resp = await fetch(url, options);
+    // Add timeout unless caller provides their own signal
+    if (!options.signal) {
+        options.signal = AbortSignal.timeout(_API_TIMEOUT_MS);
+    }
+    let resp;
+    try {
+        resp = await fetch(url, options);
+    } catch (e) {
+        if (e.name === "TimeoutError" || e.name === "AbortError") {
+            _showUnresponsiveBanner();
+        }
+        throw e;
+    }
+    // Server responded — clear any unresponsive state
+    if (_serverUnresponsive) _dismissBanner();
     if (resp.status === 401) {
         clearVaultState();
         try {
@@ -1283,6 +1337,221 @@ async function loadSyncStatus() {
     } catch (e) {
         // Sync routes may not exist yet in Phase 1
     }
+    // Load maintenance config
+    loadMaintenanceConfig();
+}
+
+// ── Database Maintenance Config ─────────────────────────────────────────
+async function loadMaintenanceConfig() {
+    try {
+        const resp = await apiFetch("/api/maintenance/config");
+        const config = await resp.json();
+
+        // Populate UI
+        const dayEl = document.getElementById("maintDay");
+        const timeEl = document.getElementById("maintTime");
+        const tzEl = document.getElementById("maintTzDisplay");
+        const statusEl = document.getElementById("maintStatus");
+        const nextEl = document.getElementById("maintNextRun");
+
+        if (dayEl) dayEl.value = config.day_of_week || 0;
+        const h = String(config.hour || 0).padStart(2, "0");
+        const m = String(config.minute || 0).padStart(2, "0");
+        if (timeEl) timeEl.value = h + ":" + m;
+
+        const tz = config.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+        if (tzEl) tzEl.textContent = tz;
+
+        // Last run status
+        if (statusEl) {
+            if (config.last_run && config.last_status) {
+                const date = new Date(config.last_run).toLocaleString();
+                const dur = config.last_duration_s ? " · " + config.last_duration_s + "s" : "";
+                const statusText = config.last_status === "ok" ? "OK" : "ERROR";
+                const statusColor = config.last_status === "ok" ? "var(--green)" : "var(--red, #d32f2f)";
+                let info = "Last run: " + date + " · <span style='color:" + statusColor + ";font-weight:600;'>" + statusText + "</span>" + dur;
+                if (config.backup) {
+                    const bSize = (config.backup.size / 1048576).toFixed(1);
+                    info += " · Backup: " + config.backup.path + " (" + bSize + " MB)";
+                }
+                statusEl.innerHTML = info;
+            } else {
+                statusEl.textContent = "No maintenance runs yet";
+            }
+        }
+
+        // Next run
+        if (nextEl && config.next_run && config.next_run.next_run_local) {
+            nextEl.textContent = "Next run: " + config.next_run.next_run_local;
+        } else if (nextEl) {
+            nextEl.textContent = "";
+        }
+
+        // Show failure banner if last run failed
+        if (config.last_status === "error") {
+            _showMaintenanceFailureBanner(config.last_error || "Unknown error");
+        }
+    } catch (e) {
+        // Maintenance endpoint may not exist yet
+    }
+}
+
+function _showMaintenanceFailureBanner(error) {
+    let banner = document.getElementById("maintenanceFailureBanner");
+    if (banner) { banner.style.display = "flex"; return; }
+    banner = document.createElement("div");
+    banner.id = "maintenanceFailureBanner";
+    banner.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:9999;background:#e65100;color:#fff;padding:10px 20px;display:flex;align-items:center;gap:12px;font-size:13px;font-weight:500;justify-content:center;flex-wrap:wrap;";
+    banner.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>'
+        + '<span>Database maintenance failed: ' + error.replace(/</g, "&lt;") + '</span>'
+        + '<button onclick="_restoreFromBackup()" style="background:#fff;color:#e65100;border:none;padding:4px 14px;border-radius:4px;cursor:pointer;font-weight:600;font-size:12px;">Restore from Backup</button>'
+        + '<button onclick="this.parentElement.style.display=\'none\'" style="background:transparent;color:#fff;border:1px solid rgba(255,255,255,0.5);padding:4px 14px;border-radius:4px;cursor:pointer;font-size:12px;">Dismiss</button>';
+    document.body.prepend(banner);
+}
+
+async function _restoreFromBackup() {
+    if (!confirm("Restore the database from the last backup? This will replace the current database.")) return;
+    try {
+        const resp = await apiFetch("/api/maintenance/restore", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+        });
+        const result = await resp.json();
+        if (result.status === "ok") {
+            showToast("Database restored from backup", "success");
+            const banner = document.getElementById("maintenanceFailureBanner");
+            if (banner) banner.style.display = "none";
+            loadSyncStatus();
+        } else {
+            showToast("Restore failed: " + (result.error || "Unknown"), "error");
+        }
+    } catch (e) {
+        showToast("Restore failed: " + e.message, "error");
+    }
+}
+
+async function saveMaintenanceConfig() {
+    const day = parseInt(document.getElementById("maintDay").value);
+    const timeParts = (document.getElementById("maintTime").value || "00:00").split(":");
+    const hour = parseInt(timeParts[0]) || 0;
+    const minute = parseInt(timeParts[1]) || 0;
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    try {
+        const resp = await apiFetch("/api/maintenance/config", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ day_of_week: day, hour, minute, timezone: tz }),
+        });
+        const config = await resp.json();
+        showToast("Maintenance schedule saved", "success");
+        loadMaintenanceConfig();
+    } catch (e) {
+        showToast("Failed to save: " + e.message, "error");
+    }
+}
+
+// ── Application Updates ─────────────────────────────────────────────────
+async function checkForUpdates() {
+    const statusEl = document.getElementById("updateStatus");
+    const actionsEl = document.getElementById("updateActions");
+    const checkBtn = document.getElementById("updateCheckBtn");
+    checkBtn.disabled = true;
+    checkBtn.textContent = "Checking...";
+    statusEl.innerHTML = '<span style="opacity:0.7;">Checking GitHub for updates...</span>';
+    actionsEl.style.display = "none";
+
+    try {
+        const resp = await apiFetch("/api/update/check");
+        const data = await resp.json();
+
+        if (data.error) {
+            statusEl.innerHTML = '<span style="color:var(--red,#d32f2f);">Check failed: ' + escapeHtml(data.error) + '</span>';
+        } else if (data.update_available) {
+            const date = new Date(data.latest_date).toLocaleString();
+            const behind = data.commits_behind ? " (" + data.commits_behind + " commits behind)" : "";
+            statusEl.innerHTML = '<span style="color:var(--orange,#e65100);font-weight:600;">Update available!</span>'
+                + '<br><span style="font-size:12px;opacity:0.8;">Latest: ' + escapeHtml(data.latest_short)
+                + ' — ' + escapeHtml(data.latest_message)
+                + '<br>' + date + behind + '</span>';
+            if (data.current) {
+                statusEl.innerHTML += '<br><span style="font-size:12px;opacity:0.6;">Current: ' + data.current.slice(0, 8) + '</span>';
+            }
+            actionsEl.style.display = "";
+        } else {
+            statusEl.innerHTML = '<span style="color:var(--green);font-weight:600;">Up to date</span>'
+                + '<span style="font-size:12px;opacity:0.7;margin-left:8px;">Version: '
+                + (data.current ? data.current.slice(0, 8) : "unknown") + '</span>';
+        }
+    } catch (e) {
+        statusEl.innerHTML = '<span style="color:var(--red,#d32f2f);">Check failed: ' + escapeHtml(e.message) + '</span>';
+    }
+    checkBtn.disabled = false;
+    checkBtn.textContent = "Check for Updates";
+}
+
+async function applyUpdate() {
+    if (!confirm("Apply the latest update? The application will restart after updating.")) return;
+    const statusEl = document.getElementById("updateStatus");
+    const actionsEl = document.getElementById("updateActions");
+    const applyBtn = document.getElementById("updateApplyBtn");
+    applyBtn.disabled = true;
+    applyBtn.textContent = "Updating...";
+    statusEl.innerHTML = '<span style="opacity:0.7;">Downloading and applying update... This may take a minute.</span>';
+
+    try {
+        const resp = await apiFetch("/api/update/apply", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            signal: AbortSignal.timeout(120000),  // 2 min timeout for update
+        });
+        const data = await resp.json();
+        if (data.status === "ok") {
+            statusEl.innerHTML = '<span style="color:var(--green);font-weight:600;">Update applied!</span>'
+                + '<br><span style="font-size:12px;">Version: ' + (data.version_short || "—")
+                + ' · ' + escapeHtml(data.message || "")
+                + '<br>Duration: ' + (data.duration_s || "—") + 's'
+                + '<br>The application is restarting. Refresh the page in a few seconds.</span>';
+            actionsEl.style.display = "none";
+            showToast("Update applied — refreshing in 5 seconds...", "success");
+            setTimeout(() => window.location.reload(), 5000);
+        } else {
+            statusEl.innerHTML = '<span style="color:var(--red,#d32f2f);font-weight:600;">Update failed</span>'
+                + '<br><span style="font-size:12px;">' + escapeHtml(data.error || "Unknown error") + '</span>';
+            showToast("Update failed: " + (data.error || "Unknown"), "error");
+        }
+    } catch (e) {
+        statusEl.innerHTML = '<span style="color:var(--red,#d32f2f);">Update failed: ' + escapeHtml(e.message) + '</span>';
+    }
+    applyBtn.disabled = false;
+    applyBtn.textContent = "Update Now";
+}
+
+// ── GitHub Issue Submission ──────────────────────────────────────────────
+function submitGitHubIssue() {
+    const type = document.getElementById("issueType").value;
+    const title = document.getElementById("issueTitle").value.trim();
+    const body = document.getElementById("issueBody").value.trim();
+
+    if (!title) { showToast("Please enter a title", "error"); return; }
+
+    const label = type === "bug" ? "bug" : "enhancement";
+    const prefix = type === "bug" ? "[Bug] " : "[Feature] ";
+    const template = type === "bug"
+        ? body + "\n\n---\n**Environment:**\n- Q KB Explorer\n- Browser: " + navigator.userAgent.split(" ").slice(-2).join(" ")
+        : body;
+
+    const params = new URLSearchParams({
+        title: prefix + title,
+        body: template,
+        labels: label,
+    });
+
+    const url = "https://github.com/netsecops-76/Public-Security-Resources/issues/new?" + params.toString();
+    window.open(url, "_blank");
+
+    // Clear form
+    document.getElementById("issueTitle").value = "";
+    document.getElementById("issueBody").value = "";
+    showToast("GitHub issue page opened — submit in the new tab", "info");
 }
 
 // Map display type → data type key for _totalCounts
@@ -1507,11 +1776,27 @@ async function pollSyncProgress(type) {
     const fillEl = document.getElementById("syncFill" + typeKey);
     const countdownId = parseInt(progressEl.dataset.countdownId || "0");
 
+    let _lastProgressCount = -1;
+    let _lastProgressTime = Date.now();
+    const _STUCK_THRESHOLD_MS = 300000; // 5 minutes with no progress change
+    let _stuckWarned = false;
+
     const poll = async () => {
         try {
             const resp = await apiFetch("/api/sync/" + type + "/progress");
             const p = await resp.json();
             if (p.running) {
+                // Stuck-sync detection: if items_synced unchanged for 5 min, warn user
+                const currentCount = p.items_synced || 0;
+                if (currentCount !== _lastProgressCount) {
+                    _lastProgressCount = currentCount;
+                    _lastProgressTime = Date.now();
+                    _stuckWarned = false;
+                } else if (!_stuckWarned && (Date.now() - _lastProgressTime) > _STUCK_THRESHOLD_MS) {
+                    _stuckWarned = true;
+                    textEl.textContent += " ⚠ No progress for 5 min — sync may be stuck";
+                    showToast(type.toUpperCase() + " sync appears stuck — no progress for 5 minutes. You can wait or restart the container.", "error");
+                }
                 // Live progress update — data is flowing
                 if (p.items_synced !== undefined && p.items_synced > 0) {
                     // Data arrived — stop countdown, show live counter
@@ -3458,6 +3743,7 @@ async function loadDashboard() {
         renderPatchable(stats.patchable || {});
         renderComplianceSummary(stats.compliance || {});
         renderSyncHealth(sync);
+        renderDbHealth(stats.db_health || {});
         _tabLoaded.dashboard = true;
     } catch (e) {
         console.error("Dashboard load failed:", e);
@@ -3656,6 +3942,42 @@ function _syncHealthStatus(syncState) {
     if (days < 7) return { cls: "health-green", label: "Healthy" };
     if (days < 30) return { cls: "health-orange", label: "Aging" };
     return { cls: "health-red", label: "Stale" };
+}
+
+function renderDbHealth(dbh) {
+    const fmtSize = (n) => {
+        if (!n) return "—";
+        if (n < 1048576) return (n / 1024).toFixed(1) + " KB";
+        return (n / 1048576).toFixed(1) + " MB";
+    };
+    const el = (id) => document.getElementById(id);
+    if (el("dbSize")) el("dbSize").textContent = fmtSize(dbh.size);
+    if (el("dbLastMaint")) {
+        el("dbLastMaint").textContent = dbh.last_maintenance
+            ? new Date(dbh.last_maintenance).toLocaleString() : "Never";
+    }
+    if (el("dbMaintStatus")) {
+        const s = dbh.last_status;
+        if (s === "ok") {
+            el("dbMaintStatus").innerHTML = '<span style="color:var(--green);font-weight:600;">OK</span>';
+        } else if (s === "error") {
+            el("dbMaintStatus").innerHTML = '<span style="color:var(--red, #d32f2f);font-weight:600;">ERROR</span>';
+        } else {
+            el("dbMaintStatus").textContent = "—";
+        }
+    }
+    if (el("dbMaintDuration")) {
+        el("dbMaintDuration").textContent = dbh.last_duration_s != null
+            ? dbh.last_duration_s + "s" : "—";
+    }
+    if (el("dbBackupInfo")) {
+        if (dbh.backup_size && dbh.backup_date) {
+            const bDate = new Date(dbh.backup_date).toLocaleString();
+            el("dbBackupInfo").textContent = fmtSize(dbh.backup_size) + " · " + bDate;
+        } else {
+            el("dbBackupInfo").textContent = "No backup yet";
+        }
+    }
 }
 
 
