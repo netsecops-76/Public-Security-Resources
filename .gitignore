@@ -1,0 +1,4 @@
+sample-logs/
+.DS_Store
+*.log
+.claude/
