@@ -459,10 +459,10 @@
 <div id="uploadZone" class="upload-zone">
   <div class="upload-box" id="uploadBox">
     <div class="icon">&#128196;</div>
-    <h2>Drop Qualys CAR Report CSV</h2>
-    <p>or click to browse &mdash; supports Linux &amp; Windows agent logs</p>
+    <h2>Drop Qualys Log File</h2>
+    <p>or click to browse &mdash; supports .csv (CAR reports), .log files, .zip, and .tar.gz archives</p>
   </div>
-  <input type="file" id="fileInput" accept=".csv">
+  <input type="file" id="fileInput" accept=".csv,.log,.zip,.tar.gz,.gz">
 </div>
 
 <div id="viewer" class="viewer">
@@ -518,33 +518,294 @@ resetBtn.addEventListener('click', () => {
 });
 
 function handleFile(file) {
+  const name = file.name.toLowerCase();
+
+  if (name.endsWith('.zip')) {
+    handleZipFile(file);
+  } else if (name.endsWith('.tar.gz') || name.endsWith('.tgz')) {
+    handleTarGzFile(file);
+  } else if (name.endsWith('.log') || name.endsWith('.txt')) {
+    handleRawLogFile(file);
+  } else if (name.endsWith('.csv')) {
+    handleCSVFile(file);
+  } else {
+    // Try as raw text
+    handleRawLogFile(file);
+  }
+}
+
+function showViewer(data) {
+  allAssets = data;
+  currentAssetIdx = 0;
+
+  const osType = detectOSType(data);
+  osBadge.textContent = osType === 'windows' ? 'Windows' : osType === 'linux' ? 'Linux' : 'Unknown OS';
+  osBadge.className = 'log-type-badge ' + osType;
+  osBadge.style.display = '';
+
+  uploadZone.style.display = 'none';
+  viewer.style.display = 'block';
+  document.getElementById('headerNewFileBtn').style.display = '';
+  buildAssetTabs();
+  const firstWithOutput = data.findIndex(a => (a['Script Result'] || '').trim().length > 0);
+  showAsset(firstWithOutput >= 0 ? firstWithOutput : 0);
+}
+
+function handleCSVFile(file) {
   const reader = new FileReader();
   reader.onload = e => {
     try {
       const data = parseCSV(e.target.result);
       if (!data.length) { alert('No data rows found in CSV.'); return; }
-      allAssets = data;
-      currentAssetIdx = 0;
-
-      // Detect OS from technology field
-      const osType = detectOSType(data);
-      osBadge.textContent = osType === 'windows' ? 'Windows' : osType === 'linux' ? 'Linux' : 'Unknown OS';
-      osBadge.className = 'log-type-badge ' + osType;
-      osBadge.style.display = '';
-
-      uploadZone.style.display = 'none';
-      viewer.style.display = 'block';
-      document.getElementById('headerNewFileBtn').style.display = '';
-      buildAssetTabs();
-      // Show first asset with output, or first asset
-      const firstWithOutput = data.findIndex(a => (a['Script Result'] || '').trim().length > 0);
-      showAsset(firstWithOutput >= 0 ? firstWithOutput : 0);
+      showViewer(data);
     } catch (err) {
       alert('Error parsing CSV: ' + err.message);
       console.error(err);
     }
   };
   reader.readAsText(file);
+}
+
+function handleRawLogFile(file) {
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const text = e.target.result;
+      if (!text.trim()) { alert('File is empty.'); return; }
+      const asset = buildAssetFromLog(file.name, text);
+      showViewer([asset]);
+    } catch (err) {
+      alert('Error reading log file: ' + err.message);
+      console.error(err);
+    }
+  };
+  reader.readAsText(file);
+}
+
+function buildAssetFromLog(filename, text) {
+  // Detect OS from log content
+  let tech = 'Unknown';
+  if (/\[qualys-cloud-agent\]|\[qualys-cep\]|\[qualys-health-check\]/.test(text.slice(0, 2000))) {
+    // Check for platform hints
+    if (/Platform.*LINUX|\/var\/log\/qualys/i.test(text.slice(0, 5000))) tech = 'Linux';
+    else if (/Platform.*WINDOWS|C:\\ProgramData\\Qualys/i.test(text.slice(0, 5000))) tech = 'Windows';
+  }
+  // Extract hostname from CAPI payload if present
+  let hostname = filename;
+  const hostMatch = text.match(/"ComputerName"\s*:\s*"([^"]+)"/);
+  if (hostMatch) hostname = hostMatch[1];
+
+  return {
+    'Asset Title': hostname,
+    'Technology': tech,
+    'Agent Uuid': '',
+    'Status': 'DIRECT LOG',
+    'Is Asset Disconnected': 'false',
+    'Script Result': text,
+    'Execution Start Time (In UTC)': '',
+    'Duration in Milliseconds': '',
+    'Return Code': '',
+  };
+}
+
+async function handleZipFile(file) {
+  try {
+    const buffer = await file.arrayBuffer();
+    const logFiles = await extractLogFilesFromZipAsync(buffer);
+    if (!logFiles.length) { alert('No .log files found in ZIP archive.'); return; }
+    const assets = logFiles.map(f => buildAssetFromLog(f.name, f.content));
+    showViewer(assets);
+  } catch (err) {
+    alert('Error reading ZIP: ' + err.message);
+    console.error(err);
+  }
+}
+
+function extractLogFilesFromZip(buffer) {
+  const view = new DataView(buffer);
+  const files = [];
+  let offset = 0;
+  const decoder = new TextDecoder();
+
+  while (offset < buffer.byteLength - 4) {
+    const sig = view.getUint32(offset, true);
+    if (sig !== 0x04034b50) break; // local file header signature
+
+    const compressionMethod = view.getUint16(offset + 8, true);
+    const compressedSize = view.getUint32(offset + 18, true);
+    const uncompressedSize = view.getUint32(offset + 22, true);
+    const nameLen = view.getUint16(offset + 26, true);
+    const extraLen = view.getUint16(offset + 28, true);
+    const nameBytes = new Uint8Array(buffer, offset + 30, nameLen);
+    const fileName = decoder.decode(nameBytes);
+    const dataStart = offset + 30 + nameLen + extraLen;
+
+    if (fileName.endsWith('.log') && !fileName.startsWith('__MACOSX')) {
+      if (compressionMethod === 0) {
+        // Stored (no compression)
+        const raw = new Uint8Array(buffer, dataStart, uncompressedSize);
+        files.push({ name: fileName.split('/').pop(), content: decoder.decode(raw) });
+      } else if (compressionMethod === 8) {
+        // Deflated — use DecompressionStream
+        try {
+          const compressed = new Uint8Array(buffer, dataStart, compressedSize);
+          const decompressed = inflateRaw(compressed);
+          files.push({ name: fileName.split('/').pop(), content: decoder.decode(decompressed) });
+        } catch (e) {
+          console.warn('Could not decompress ' + fileName, e);
+        }
+      }
+    }
+
+    offset = dataStart + compressedSize;
+  }
+  return files;
+}
+
+function inflateRaw(compressed) {
+  // Use the browser's DecompressionStream API for deflate-raw
+  // Fallback: synchronous inflate via a trick with Response + DecompressionStream
+  // We'll use a synchronous approach that works in modern browsers
+  const ds = new DecompressionStream('deflate-raw');
+  const writer = ds.writable.getWriter();
+  const reader = ds.readable.getReader();
+  writer.write(compressed);
+  writer.close();
+
+  // Collect all chunks
+  const chunks = [];
+  let totalLen = 0;
+
+  // Return a promise-based result — we need to make handleZipFile async-aware
+  return new Promise(async (resolve, reject) => {
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        totalLen += value.length;
+      }
+      const result = new Uint8Array(totalLen);
+      let pos = 0;
+      for (const chunk of chunks) {
+        result.set(chunk, pos);
+        pos += chunk.length;
+      }
+      resolve(result);
+    } catch (e) { reject(e); }
+  });
+}
+
+async function extractLogFilesFromZipAsync(buffer) {
+  const view = new DataView(buffer);
+  const files = [];
+  const decoder = new TextDecoder();
+  let offset = 0;
+
+  while (offset < buffer.byteLength - 4) {
+    const sig = view.getUint32(offset, true);
+    if (sig !== 0x04034b50) break;
+
+    const compressionMethod = view.getUint16(offset + 8, true);
+    const compressedSize = view.getUint32(offset + 18, true);
+    const uncompressedSize = view.getUint32(offset + 22, true);
+    const nameLen = view.getUint16(offset + 26, true);
+    const extraLen = view.getUint16(offset + 28, true);
+    const nameBytes = new Uint8Array(buffer, offset + 30, nameLen);
+    const fileName = decoder.decode(nameBytes);
+    const dataStart = offset + 30 + nameLen + extraLen;
+
+    if (fileName.endsWith('.log') && !fileName.startsWith('__MACOSX')) {
+      if (compressionMethod === 0) {
+        const raw = new Uint8Array(buffer, dataStart, uncompressedSize);
+        files.push({ name: fileName.split('/').pop(), content: decoder.decode(raw) });
+      } else if (compressionMethod === 8) {
+        try {
+          const compressed = new Uint8Array(buffer, dataStart, compressedSize);
+          const decompressed = await inflateRaw(compressed);
+          files.push({ name: fileName.split('/').pop(), content: decoder.decode(decompressed) });
+        } catch (e) {
+          console.warn('Could not decompress ' + fileName, e);
+        }
+      }
+    }
+    offset = dataStart + compressedSize;
+  }
+  return files;
+}
+
+async function handleTarGzFile(file) {
+  try {
+    const buffer = await file.arrayBuffer();
+    // Decompress gzip first
+    const ds = new DecompressionStream('gzip');
+    const writer = ds.writable.getWriter();
+    const reader = ds.readable.getReader();
+    writer.write(new Uint8Array(buffer));
+    writer.close();
+
+    const chunks = [];
+    let totalLen = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      totalLen += value.length;
+    }
+    const tarBuffer = new Uint8Array(totalLen);
+    let pos = 0;
+    for (const chunk of chunks) {
+      tarBuffer.set(chunk, pos);
+      pos += chunk.length;
+    }
+
+    // Parse tar
+    const logFiles = parseTar(tarBuffer);
+    if (!logFiles.length) { alert('No .log files found in tar.gz archive.'); return; }
+    const assets = logFiles.map(f => buildAssetFromLog(f.name, f.content));
+    showViewer(assets);
+  } catch (err) {
+    alert('Error reading tar.gz: ' + err.message);
+    console.error(err);
+  }
+}
+
+function parseTar(buffer) {
+  const decoder = new TextDecoder();
+  const files = [];
+  let offset = 0;
+
+  while (offset < buffer.length - 512) {
+    const header = buffer.slice(offset, offset + 512);
+    // Check for empty block (end of archive)
+    if (header.every(b => b === 0)) break;
+
+    const nameBytes = header.slice(0, 100);
+    let name = decoder.decode(nameBytes).replace(/\0/g, '').trim();
+
+    // POSIX ustar prefix
+    const prefix = decoder.decode(header.slice(345, 500)).replace(/\0/g, '').trim();
+    if (prefix) name = prefix + '/' + name;
+
+    // File size in octal at offset 124, length 12
+    const sizeStr = decoder.decode(header.slice(124, 136)).replace(/\0/g, '').trim();
+    const size = parseInt(sizeStr, 8) || 0;
+
+    // Type flag at offset 156
+    const typeFlag = header[156];
+
+    offset += 512; // move past header
+
+    // typeFlag 0 or ASCII '0' (48) = regular file
+    if ((typeFlag === 0 || typeFlag === 48) && size > 0 && name.endsWith('.log')) {
+      const content = decoder.decode(buffer.slice(offset, offset + size));
+      files.push({ name: name.split('/').pop(), content });
+    }
+
+    // Advance past file data (512-byte aligned)
+    offset += Math.ceil(size / 512) * 512;
+  }
+  return files;
 }
 
 function detectOSType(assets) {
