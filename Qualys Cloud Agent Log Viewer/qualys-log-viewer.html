@@ -1226,7 +1226,17 @@ function handleCSV(text, filename) {
 }
 
 // ===== Raw log file handling =====
+function cleanText(text) {
+  // Strip UTF-16 LE null bytes and BOM — Windows Log.txt files are often UTF-16 LE encoded
+  // which produces \0 between every ASCII character when read as UTF-8
+  if (text.includes('\0')) text = text.replace(/\0/g, '');
+  // Strip BOM (UTF-8 or UTF-16)
+  if (text.charCodeAt(0) === 0xFEFF || text.charCodeAt(0) === 0xFFFE) text = text.slice(1);
+  return text;
+}
+
 function handleLogFile(text, filename) {
+  text = cleanText(text);
   const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
   const parsed = parseLogLines(lines);
   const logType = detectLogType(parsed, filename);
@@ -1249,16 +1259,32 @@ function handleLogFile(text, filename) {
 }
 
 function extractCapiMeta(rawText) {
-  const marker = 'CAPI request json payload:';
-  const idx = rawText.indexOf(marker);
-  if (idx === -1) return null;
-  // Find the next line after the marker
-  const afterMarker = rawText.indexOf('\n', idx);
-  if (afterMarker === -1) return null;
-  const lineEnd = rawText.indexOf('\n', afterMarker + 1);
-  const jsonLine = lineEnd === -1 ? rawText.slice(afterMarker + 1) : rawText.slice(afterMarker + 1, lineEnd);
+  // Linux marker: "CAPI request json payload:" (JSON on next line)
+  // Windows marker: "Agent CAPI json: {..." (JSON inline after the colon)
+  let jsonStr = null;
+
+  const linuxMarker = 'CAPI request json payload:';
+  const winMarker = 'Agent CAPI json:';
+  let idx = rawText.indexOf(linuxMarker);
+  if (idx !== -1) {
+    // Linux: JSON is on the next line
+    const afterMarker = rawText.indexOf('\n', idx);
+    if (afterMarker === -1) return null;
+    const lineEnd = rawText.indexOf('\n', afterMarker + 1);
+    jsonStr = lineEnd === -1 ? rawText.slice(afterMarker + 1) : rawText.slice(afterMarker + 1, lineEnd);
+  } else {
+    idx = rawText.indexOf(winMarker);
+    if (idx === -1) return null;
+    // Windows: JSON is inline on the same line after "Agent CAPI json: "
+    const jsonStart = rawText.indexOf('{', idx);
+    if (jsonStart === -1) return null;
+    const lineEnd = rawText.indexOf('\n', jsonStart);
+    jsonStr = lineEnd === -1 ? rawText.slice(jsonStart) : rawText.slice(jsonStart, lineEnd);
+  }
+
+  if (!jsonStr) return null;
   try {
-    const payload = JSON.parse(jsonLine.trim());
+    const payload = JSON.parse(jsonStr.trim());
     const d = payload.Data || payload.data || {};
     const agent = d.Agent || {};
     const client = d.Client || {};
@@ -1298,6 +1324,7 @@ function detectLogType(lines, filename) {
     if (/qualys-health-check/.test(fn)) return 'health-check';
     if (/qualys-mux|multiplexer/.test(fn)) return 'mux';
     if (/agentid/.test(fn)) return 'agentid';
+    if (/^log\.txt$/i.test(fn)) return 'cloud-agent';
   }
   const counts = {};
   for (let i = 0; i < Math.min(lines.length, 200); i++) {
@@ -1808,7 +1835,7 @@ searchBox.addEventListener('input', () => {
 });
 
 // --- Version check against GitHub ---
-const APP_VERSION = '1.0.3';
+const APP_VERSION = '1.0.4';
 const REPO_URL = 'https://github.com/netsecops-76/Public-Security-Resources/tree/Qualys-Cloud-Agent-Log-Viewer';
 const VERSION_RAW_URL = 'https://raw.githubusercontent.com/netsecops-76/Public-Security-Resources/Qualys-Cloud-Agent-Log-Viewer/version.txt';
 
