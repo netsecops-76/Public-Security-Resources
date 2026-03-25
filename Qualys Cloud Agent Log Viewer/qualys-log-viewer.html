@@ -448,10 +448,10 @@
 
 <div class="app-header">
   <h1>Qualys Cloud Agent Log Viewer</h1>
+  <button class="header-btn" id="headerNewFileBtn" style="display:none" title="Load a new file">&#128196; New File</button>
   <span class="log-type-badge unknown" id="osBadge" style="display:none"></span>
   <div class="header-actions">
     <span class="version-badge checking" id="versionBadge">Checking version...</span>
-    <button class="header-btn" id="headerNewFileBtn" style="display:none" title="Load a new file">&#128196; New File</button>
     <button class="header-btn" id="helpBtn" title="Help &amp; Documentation">&#10068; Help</button>
   </div>
 </div>
@@ -534,6 +534,7 @@ function handleFile(file) {
 
       uploadZone.style.display = 'none';
       viewer.style.display = 'block';
+      document.getElementById('headerNewFileBtn').style.display = '';
       buildAssetTabs();
       // Show first asset with output, or first asset
       const firstWithOutput = data.findIndex(a => (a['Script Result'] || '').trim().length > 0);
