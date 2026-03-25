@@ -1,6 +1,6 @@
 # Deployment Guide
 
-The Qualys Cloud Agent Log Viewer is a single HTML file with no build step, no server requirements, and no dependencies (except an optional CDN-loaded 7z decoder for Windows REMOTELOG bundles). This makes deployment straightforward across a variety of environments.
+The Qualys Cloud Agent Log Viewer is a single HTML file with no build step, no server requirements, and no dependencies (except an optional CDN-loaded 7z decoder for Windows REMOTELOG bundles). It supports raw agent log files, REMOTELOG bundles, and CAR (Custom Assessment & Remediation) job report CSV exports. This makes deployment straightforward across a variety of environments.
 
 ## Quick Deploy Options
 

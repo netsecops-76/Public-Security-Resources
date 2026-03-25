@@ -1,15 +1,15 @@
 # Qualys Cloud Agent Log Viewer
 
-A single-file HTML tool for parsing and analyzing Qualys Cloud Agent log files. Drop log files into your browser and get an organized, searchable, color-coded view instantly.
+A single-file HTML tool for parsing and analyzing Qualys Cloud Agent log files and CAR (Custom Assessment & Remediation) job report CSVs. Drop files into your browser and get an organized, searchable, color-coded view instantly.
 
 No server, no install, no build step. Just open `qualys-log-viewer.html` in any modern browser.
 
-**Current Version:** 1.0.3
+**Current Version:** 1.0.4
 
 ## Quick Start
 
 1. Open `qualys-log-viewer.html` in Chrome, Edge, Firefox, or Safari
-2. Drag and drop your log files onto the upload zone — or click **Browse Files**
+2. Drag and drop your log files or CAR report CSVs onto the upload zone — or click **Browse Files**
 3. The viewer auto-detects the log type and displays parsed, grouped, color-coded entries
 
 ## Supported Input Formats
@@ -30,6 +30,10 @@ The viewer handles Qualys REMOTELOG bundles from both Linux and Windows agents a
 
 - **Linux REMOTELOG** — LZMA-compressed tar archives (`.tar.gz` with LZMA compression, sometimes double-wrapped as LZMA > gzip > tar)
 - **Windows REMOTELOG** — ZIP files containing nested 7z archives with agent logs, health checks, MSI logs, and patch management logs
+
+### CAR Job Reports
+
+CAR (Custom Assessment & Remediation) job report CSV exports are fully supported. Each asset in the report gets its own tab with execution status, script output parsing, and the same filtering/search capabilities as raw log files. The asset banner displays host details, technology, agent UUID, execution status, and duration.
 
 ## Supported Log Types
 
