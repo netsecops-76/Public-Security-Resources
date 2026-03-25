@@ -261,7 +261,9 @@ select { cursor: pointer; }
 .modal-footer {
     padding: 16px 24px; border-top: 1px solid var(--border);
     display: flex; justify-content: flex-end; gap: 12px;
+    flex-shrink: 0;
 }
+.modal-header { flex-shrink: 0; }
 
 /* Sync details modal */
 .sync-details-modal { max-width: 760px; }
