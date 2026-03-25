@@ -262,6 +262,20 @@ CREATE TABLE IF NOT EXISTS db_maintenance_config (
 );
 INSERT OR IGNORE INTO db_maintenance_config (id) VALUES (1);
 
+-- Auto-update configuration (singleton)
+CREATE TABLE IF NOT EXISTS auto_update_config (
+    id              INTEGER PRIMARY KEY CHECK (id = 1),
+    enabled         INTEGER DEFAULT 0,
+    day_of_week     INTEGER DEFAULT 6,
+    hour            INTEGER DEFAULT 0,
+    minute          INTEGER DEFAULT 0,
+    timezone        TEXT DEFAULT '',
+    last_check      TEXT,
+    last_status     TEXT,
+    last_error      TEXT
+);
+INSERT OR IGNORE INTO auto_update_config (id) VALUES (1);
+
 -- FTS5 indexes for full-text search
 CREATE VIRTUAL TABLE IF NOT EXISTS vulns_fts USING fts5(
     qid, title, category, diagnosis, consequence, solution,
@@ -2303,4 +2317,41 @@ def update_maintenance_last_run(status: str, error: str | None,
                SET last_run=?, last_status=?, last_error=?, last_duration_s=?
                WHERE id=1""",
             (now, status, error, round(duration, 1)),
+        )
+
+
+# ── Auto-Update Configuration ────────────────────────────────────────────
+
+def get_auto_update_config() -> dict:
+    """Get the auto-update schedule configuration."""
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM auto_update_config WHERE id = 1").fetchone()
+        if row:
+            return dict(row)
+    return {"enabled": 0, "day_of_week": 6, "hour": 0, "minute": 0, "timezone": ""}
+
+
+def save_auto_update_config(enabled: bool, day_of_week: int, hour: int,
+                             minute: int, timezone: str) -> dict:
+    """Save auto-update schedule configuration."""
+    with get_db() as conn:
+        conn.execute(
+            """UPDATE auto_update_config
+               SET enabled=?, day_of_week=?, hour=?, minute=?, timezone=?
+               WHERE id=1""",
+            (1 if enabled else 0, day_of_week, hour, minute, timezone),
+        )
+    return get_auto_update_config()
+
+
+def update_auto_update_last_check(status: str, error: str | None = None) -> None:
+    """Record the result of the last auto-update check."""
+    from datetime import datetime
+    now = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    with get_db() as conn:
+        conn.execute(
+            """UPDATE auto_update_config
+               SET last_check=?, last_status=?, last_error=?
+               WHERE id=1""",
+            (now, status, error),
         )

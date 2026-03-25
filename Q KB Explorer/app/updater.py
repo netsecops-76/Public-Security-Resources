@@ -147,22 +147,38 @@ def apply_update() -> dict:
             raise RuntimeError(f"Unexpected tarball structure: {entries}")
         source_dir = os.path.join(extract_dir, entries[0])
 
-        # Step 4: Copy app/ files
+        # Step 4: Navigate into the project subdirectory
+        # The tarball extracts as: Public-Security-Resources-Q-KB-Explorer/Q KB Explorer/app/
+        # We need to find the subdirectory containing app/
         src_app = os.path.join(source_dir, "app")
-        dst_app = os.path.join(APP_DIR, "app")
+        project_dir = source_dir
         if not os.path.isdir(src_app):
-            raise RuntimeError("No app/ directory found in update")
+            # Look for app/ inside a subdirectory (e.g. "Q KB Explorer/app/")
+            for entry in os.listdir(source_dir):
+                candidate = os.path.join(source_dir, entry, "app")
+                if os.path.isdir(candidate):
+                    project_dir = os.path.join(source_dir, entry)
+                    src_app = candidate
+                    logger.info("[Updater] Found app/ in subdirectory: %s", entry)
+                    break
+            else:
+                raise RuntimeError(
+                    f"No app/ directory found in update. "
+                    f"Top-level contents: {os.listdir(source_dir)}"
+                )
 
+        dst_app = os.path.join(APP_DIR, "app")
         logger.info("[Updater] Applying update: %s → %s", src_app, dst_app)
         # Remove old app dir and replace with new
         shutil.rmtree(dst_app)
         shutil.copytree(src_app, dst_app)
 
-        # Also copy requirements.txt if present
-        src_reqs = os.path.join(source_dir, "requirements.txt")
-        dst_reqs = os.path.join(APP_DIR, "requirements.txt")
-        if os.path.exists(src_reqs):
-            shutil.copy2(src_reqs, dst_reqs)
+        # Also copy root-level files if present (requirements.txt, Dockerfile, etc.)
+        for root_file in ("requirements.txt", "Dockerfile", "docker-compose.yml", "entrypoint.sh"):
+            src_file = os.path.join(project_dir, root_file)
+            dst_file = os.path.join(APP_DIR, root_file)
+            if os.path.exists(src_file):
+                shutil.copy2(src_file, dst_file)
 
         # Step 5: Install new requirements (if any changed)
         logger.info("[Updater] Installing dependencies...")

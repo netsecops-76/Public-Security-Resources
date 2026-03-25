@@ -1339,6 +1339,8 @@ async function loadSyncStatus() {
     }
     // Load maintenance config
     loadMaintenanceConfig();
+    // Load auto-update config
+    loadAutoUpdateConfig();
 }
 
 // ── Database Maintenance Config ─────────────────────────────────────────
@@ -1523,6 +1525,90 @@ async function applyUpdate() {
     }
     applyBtn.disabled = false;
     applyBtn.textContent = "Update Now";
+}
+
+// ── Auto-Update Schedule ─────────────────────────────────────────────────
+function toggleAutoUpdateSettings() {
+    const enabled = document.getElementById("autoUpdateEnabled").checked;
+    const settings = document.getElementById("autoUpdateSettings");
+    if (settings) settings.style.display = enabled ? "" : "none";
+    if (!enabled) {
+        // Save disabled state immediately
+        saveAutoUpdateConfig();
+    }
+}
+
+async function loadAutoUpdateConfig() {
+    try {
+        const resp = await apiFetch("/api/update/schedule");
+        const config = await resp.json();
+
+        const enabledEl = document.getElementById("autoUpdateEnabled");
+        const dayEl = document.getElementById("autoUpdateDay");
+        const timeEl = document.getElementById("autoUpdateTime");
+        const tzEl = document.getElementById("autoUpdateTzDisplay");
+        const statusEl = document.getElementById("autoUpdateStatus");
+        const nextEl = document.getElementById("autoUpdateNextRun");
+        const settingsEl = document.getElementById("autoUpdateSettings");
+
+        const isEnabled = !!config.enabled;
+        if (enabledEl) enabledEl.checked = isEnabled;
+        if (settingsEl) settingsEl.style.display = isEnabled ? "" : "none";
+
+        if (dayEl) dayEl.value = config.day_of_week ?? 6;
+        const h = String(config.hour ?? 0).padStart(2, "0");
+        const m = String(config.minute ?? 0).padStart(2, "0");
+        if (timeEl) timeEl.value = h + ":" + m;
+
+        const tz = config.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+        if (tzEl) tzEl.textContent = tz;
+
+        // Last check status
+        if (statusEl) {
+            if (config.last_check && config.last_status) {
+                const date = new Date(config.last_check).toLocaleString();
+                const labels = { up_to_date: "Up to date", updated: "Updated", error: "Error" };
+                const colors = { up_to_date: "var(--green)", updated: "var(--green)", error: "var(--red, #d32f2f)" };
+                const label = labels[config.last_status] || config.last_status;
+                const color = colors[config.last_status] || "inherit";
+                let info = "Last check: " + date + " · <span style='color:" + color + ";font-weight:600;'>" + label + "</span>";
+                if (config.last_error) info += " · " + escapeHtml(config.last_error);
+                statusEl.innerHTML = info;
+            } else {
+                statusEl.textContent = "No automatic update checks yet";
+            }
+        }
+
+        // Next run
+        if (nextEl && config.next_run_local) {
+            nextEl.textContent = "Next check: " + config.next_run_local;
+        } else if (nextEl) {
+            nextEl.textContent = "";
+        }
+    } catch (e) {
+        // Auto-update schedule endpoint may not exist
+    }
+}
+
+async function saveAutoUpdateConfig() {
+    const enabled = document.getElementById("autoUpdateEnabled").checked;
+    const day = parseInt(document.getElementById("autoUpdateDay").value);
+    const timeParts = (document.getElementById("autoUpdateTime").value || "00:00").split(":");
+    const hour = parseInt(timeParts[0]) || 0;
+    const minute = parseInt(timeParts[1]) || 0;
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    try {
+        const resp = await apiFetch("/api/update/schedule", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ enabled, day_of_week: day, hour, minute, timezone: tz }),
+        });
+        const config = await resp.json();
+        showToast(enabled ? "Auto-update schedule saved" : "Auto-updates disabled", "success");
+        loadAutoUpdateConfig();
+    } catch (e) {
+        showToast("Failed to save: " + e.message, "error");
+    }
 }
 
 // ── GitHub Issue Submission ──────────────────────────────────────────────

@@ -641,6 +641,51 @@ def update_version():
     return jsonify({"version": get_current_version()})
 
 
+@app.route("/api/update/schedule")
+def update_schedule_get():
+    """Get auto-update schedule configuration."""
+    from app.database import get_auto_update_config
+    from app.scheduler import get_auto_update_schedule_info
+    config = get_auto_update_config()
+    schedule_info = get_auto_update_schedule_info(config.get("timezone", ""))
+    return jsonify({**config, **(schedule_info or {})})
+
+
+@app.route("/api/update/schedule", methods=["POST"])
+def update_schedule_save():
+    """Save auto-update schedule configuration."""
+    from app.database import save_auto_update_config
+    from app.scheduler import schedule_auto_update, remove_auto_update_schedule
+
+    data = request.get_json() or {}
+    enabled = bool(data.get("enabled", False))
+    day_of_week = int(data.get("day_of_week", 6))  # Saturday
+    hour = int(data.get("hour", 0))
+    minute = int(data.get("minute", 0))
+    timezone = data.get("timezone", "UTC")
+
+    # Validate
+    if day_of_week < 0 or day_of_week > 6:
+        return jsonify({"error": "day_of_week must be 0-6 (Sun-Sat)"}), 400
+    if hour < 0 or hour > 23:
+        return jsonify({"error": "hour must be 0-23"}), 400
+    if minute < 0 or minute > 59:
+        return jsonify({"error": "minute must be 0-59"}), 400
+
+    # Save config
+    config = save_auto_update_config(enabled, day_of_week, hour, minute, timezone)
+
+    # Update scheduler
+    if enabled:
+        schedule_info = schedule_auto_update(day_of_week, hour, minute, timezone)
+        if schedule_info:
+            config.update(schedule_info)
+    else:
+        remove_auto_update_schedule()
+
+    return jsonify(config)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Routes — QIDs (Knowledge Base)
 # ═══════════════════════════════════════════════════════════════════════════

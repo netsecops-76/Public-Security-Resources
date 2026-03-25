@@ -790,6 +790,36 @@
             <div id="updateActions" style="display:none;margin-top:12px;">
                 <button class="btn-sm btn-primary" id="updateApplyBtn" onclick="applyUpdate()">Update Now</button>
             </div>
+
+            <hr style="border:none;border-top:1px solid var(--border);margin:18px 0 14px;">
+
+            <!-- Auto-Update Schedule -->
+            <div style="display:flex;gap:10px;align-items:center;margin-bottom:14px;">
+                <label style="font-size:13px;font-weight:500;cursor:pointer;display:flex;align-items:center;gap:6px;">
+                    <input type="checkbox" id="autoUpdateEnabled" onchange="toggleAutoUpdateSettings()">
+                    Automatic Updates
+                </label>
+            </div>
+            <div id="autoUpdateSettings" style="display:none;">
+                <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:14px;">
+                    <label style="font-size:13px;font-weight:500;">Schedule:</label>
+                    <select id="autoUpdateDay" style="padding:4px 8px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-card);color:var(--fg);font-size:13px;">
+                        <option value="0">Sunday</option>
+                        <option value="1">Monday</option>
+                        <option value="2">Tuesday</option>
+                        <option value="3">Wednesday</option>
+                        <option value="4">Thursday</option>
+                        <option value="5">Friday</option>
+                        <option value="6" selected>Saturday</option>
+                    </select>
+                    <span style="font-size:13px;">at</span>
+                    <input type="time" id="autoUpdateTime" value="00:00" style="padding:4px 8px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-card);color:var(--fg);font-size:13px;">
+                    <span id="autoUpdateTzDisplay" style="font-size:12px;opacity:0.6;"></span>
+                    <button class="btn-sm btn-primary" id="autoUpdateSaveBtn" onclick="saveAutoUpdateConfig()" style="margin-left:auto;">Save Changes</button>
+                </div>
+                <div id="autoUpdateStatus" style="font-size:12px;opacity:0.7;"></div>
+                <div id="autoUpdateNextRun" style="font-size:12px;opacity:0.7;margin-top:4px;"></div>
+            </div>
         </div>
     </div>
 

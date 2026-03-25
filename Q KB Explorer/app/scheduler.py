@@ -25,6 +25,8 @@ from app.database import (
     delete_schedule as db_delete_schedule,
     update_schedule_last_run,
     get_maintenance_config,
+    get_auto_update_config,
+    update_auto_update_last_check,
 )
 
 logger = logging.getLogger(__name__)
@@ -68,6 +70,9 @@ def init_scheduler(app):
 
     # Restore database maintenance schedule
     _restore_maintenance_schedule()
+
+    # Restore auto-update schedule
+    _restore_auto_update_schedule()
 
     _scheduler.start()
     logger.info("Sync scheduler started with %d restored jobs", len(schedules))
@@ -452,3 +457,123 @@ def _get_system_timezone() -> str:
         return _time.tzname[0] or "UTC"
     except Exception:
         return "UTC"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Auto-Update Scheduling
+# ═══════════════════════════════════════════════════════════════════════════
+
+_AUTO_UPDATE_JOB_ID = "auto_update"
+
+
+def _execute_auto_update():
+    """APScheduler callback — check for and apply updates automatically."""
+    from app.updater import check_for_updates, apply_update
+
+    logger.info("[AutoUpdate] Running scheduled update check...")
+    try:
+        info = check_for_updates()
+        if info.get("error"):
+            logger.error("[AutoUpdate] Check failed: %s", info["error"])
+            update_auto_update_last_check("error", info["error"])
+            return
+
+        if not info.get("update_available"):
+            logger.info("[AutoUpdate] Already up to date (version %s)",
+                        (info.get("current") or "unknown")[:8])
+            update_auto_update_last_check("up_to_date")
+            return
+
+        logger.info("[AutoUpdate] Update available: %s — applying...",
+                     info.get("latest_short", ""))
+        result = apply_update()
+        if result["status"] == "ok":
+            logger.info("[AutoUpdate] Update applied: version %s",
+                        result.get("version_short", ""))
+            update_auto_update_last_check("updated")
+        else:
+            logger.error("[AutoUpdate] Update failed: %s", result.get("error"))
+            update_auto_update_last_check("error", result.get("error"))
+    except Exception as e:
+        logger.exception("[AutoUpdate] Scheduled update failed")
+        update_auto_update_last_check("error", str(e))
+
+
+def _restore_auto_update_schedule():
+    """Restore auto-update schedule from DB on startup."""
+    try:
+        config = get_auto_update_config()
+        if config and config.get("enabled"):
+            tz_name = config.get("timezone") or _get_system_timezone()
+            _schedule_auto_update_job(
+                config["day_of_week"], config["hour"], config["minute"], tz_name
+            )
+            logger.info("[AutoUpdate] Restored schedule: day=%d hour=%d:%02d tz=%s",
+                         config["day_of_week"], config["hour"], config["minute"], tz_name)
+    except Exception as e:
+        logger.warning("[AutoUpdate] Failed to restore schedule: %s", e)
+
+
+def schedule_auto_update(day_of_week: int, hour: int, minute: int,
+                          timezone: str) -> dict | None:
+    """Create or update the weekly auto-update schedule.
+
+    Args:
+        day_of_week: 0=Sunday..6=Saturday
+        hour: 0-23
+        minute: 0-59
+        timezone: IANA timezone name
+    """
+    _schedule_auto_update_job(day_of_week, hour, minute, timezone)
+    return get_auto_update_schedule_info(timezone)
+
+
+def _schedule_auto_update_job(day_of_week: int, hour: int, minute: int,
+                               timezone: str):
+    """Add or replace the APScheduler cron job for auto-updates."""
+    if not _scheduler:
+        return
+    try:
+        _scheduler.remove_job(_AUTO_UPDATE_JOB_ID)
+    except Exception:
+        pass
+
+    ap_dow = _DOW_TO_APSCHEDULER.get(day_of_week, 6)
+    trigger = CronTrigger(
+        day_of_week=ap_dow, hour=hour, minute=minute,
+        timezone=pytz.timezone(timezone) if timezone else pytz.utc,
+    )
+    _scheduler.add_job(
+        _execute_auto_update,
+        trigger=trigger,
+        id=_AUTO_UPDATE_JOB_ID,
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+
+
+def remove_auto_update_schedule():
+    """Remove the auto-update schedule."""
+    if _scheduler:
+        try:
+            _scheduler.remove_job(_AUTO_UPDATE_JOB_ID)
+        except Exception:
+            pass
+
+
+def get_auto_update_schedule_info(timezone: str = "") -> dict | None:
+    """Get next run time for the auto-update job."""
+    if not _scheduler:
+        return None
+    job = _scheduler.get_job(_AUTO_UPDATE_JOB_ID)
+    if not job or not job.next_run_time:
+        return None
+    tz_name = timezone or "UTC"
+    try:
+        local_dt = _utc_to_local(job.next_run_time, tz_name)
+        return {
+            "next_run_local": local_dt.strftime("%Y-%m-%d %I:%M %p"),
+            "next_run_utc": job.next_run_time.isoformat(),
+        }
+    except Exception:
+        return {"next_run_utc": job.next_run_time.isoformat()}
