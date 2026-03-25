@@ -828,7 +828,7 @@
         <div class="card-header"><h2>About</h2></div>
         <div class="card-body">
             <p class="about-note">Built by netsecops-76. Q KB Explorer provides offline-capable search and cross-referencing for Qualys Knowledge Base (QIDs), Compliance Controls (CIDs), and Policy Compliance Policies.</p>
-            <p class="about-note">v1.0.0</p>
+            <p class="about-note">Build: <span id="aboutBuildId">loading...</span></p>
         </div>
     </div>
 </div>
@@ -984,19 +984,25 @@
                 <p style="font-size:13px;opacity:0.7;margin-bottom:12px;">Reports are submitted as GitHub issues. You'll need a GitHub account to submit.</p>
                 <div style="display:flex;flex-direction:column;gap:10px;max-width:600px;">
                     <div style="display:flex;gap:10px;align-items:center;">
-                        <label style="font-size:13px;font-weight:500;min-width:60px;">Type:</label>
-                        <select id="issueType" style="padding:6px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-card);color:var(--fg);font-size:13px;flex:1;">
-                            <option value="bug">Bug Report</option>
-                            <option value="feature">Feature Request</option>
-                        </select>
+                        <label style="font-size:13px;font-weight:500;min-width:80px;">Type:</label>
+                        <label style="font-size:13px;cursor:pointer;display:flex;align-items:center;gap:4px;">
+                            <input type="radio" name="issueType" value="bug" checked> Bug Report
+                        </label>
+                        <label style="font-size:13px;cursor:pointer;display:flex;align-items:center;gap:4px;margin-left:12px;">
+                            <input type="radio" name="issueType" value="feature"> Feature Request
+                        </label>
                     </div>
                     <div style="display:flex;gap:10px;align-items:center;">
-                        <label style="font-size:13px;font-weight:500;min-width:60px;">Title:</label>
+                        <label style="font-size:13px;font-weight:500;min-width:80px;">Title:</label>
                         <input type="text" id="issueTitle" placeholder="Brief summary..." style="padding:6px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-card);color:var(--fg);font-size:13px;flex:1;">
                     </div>
                     <div style="display:flex;gap:10px;">
-                        <label style="font-size:13px;font-weight:500;min-width:60px;padding-top:6px;">Details:</label>
+                        <label style="font-size:13px;font-weight:500;min-width:80px;padding-top:6px;">Details:</label>
                         <textarea id="issueBody" rows="4" placeholder="Steps to reproduce (for bugs) or description (for features)..." style="padding:6px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-card);color:var(--fg);font-size:13px;flex:1;resize:vertical;font-family:inherit;"></textarea>
+                    </div>
+                    <div style="display:flex;gap:10px;align-items:center;">
+                        <label style="font-size:13px;font-weight:500;min-width:80px;">Contact:</label>
+                        <input type="email" id="issueContact" placeholder="Email for follow-up questions (optional)" style="padding:6px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-card);color:var(--fg);font-size:13px;flex:1;">
                     </div>
                     <div style="display:flex;justify-content:flex-end;">
                         <button class="btn-sm btn-primary" onclick="submitGitHubIssue()">

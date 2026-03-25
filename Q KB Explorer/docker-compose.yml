@@ -1,6 +1,9 @@
 services:
   q-kb-explorer:
-    build: .
+    build:
+      context: .
+      args:
+        BUILD_VERSION: "${BUILD_VERSION:-dev}"
     container_name: q-kb-explorer
     # Port 5000 conflicts with AirPlay Receiver on macOS Monterey+
     # Access at http://localhost:5051

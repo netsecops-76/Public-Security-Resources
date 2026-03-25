@@ -1341,6 +1341,20 @@ async function loadSyncStatus() {
     loadMaintenanceConfig();
     // Load auto-update config
     loadAutoUpdateConfig();
+    // Load build ID for About section
+    _loadBuildId();
+}
+
+async function _loadBuildId() {
+    try {
+        const resp = await apiFetch("/api/update/version");
+        const data = await resp.json();
+        const el = document.getElementById("aboutBuildId");
+        if (el) el.textContent = data.version ? data.version.slice(0, 8) : "dev";
+    } catch (_) {
+        const el = document.getElementById("aboutBuildId");
+        if (el) el.textContent = "dev";
+    }
 }
 
 // ── Database Maintenance Config ─────────────────────────────────────────
@@ -1513,8 +1527,17 @@ async function applyUpdate() {
                 + '<br>Duration: ' + (data.duration_s || "—") + 's'
                 + '<br>The application is restarting. Refresh the page in a few seconds.</span>';
             actionsEl.style.display = "none";
-            showToast("Update applied — refreshing in 5 seconds...", "success");
-            setTimeout(() => window.location.reload(), 5000);
+            showToast("Update applied — waiting for server to restart...", "success");
+            // Wait for server to come back, then hard reload
+            const _waitForServer = async (attempt) => {
+                if (attempt > 10) { statusEl.innerHTML += '<br>Server is taking longer than expected. Please refresh manually.'; return; }
+                try {
+                    const h = await fetch("/api/health", { signal: AbortSignal.timeout(3000) });
+                    if (h.ok) { window.location.reload(); return; }
+                } catch (_) {}
+                setTimeout(() => _waitForServer(attempt + 1), 2000);
+            };
+            setTimeout(() => _waitForServer(1), 3000);
         } else {
             statusEl.innerHTML = '<span style="color:var(--red,#d32f2f);font-weight:600;">Update failed</span>'
                 + '<br><span style="font-size:12px;">' + escapeHtml(data.error || "Unknown error") + '</span>';
@@ -1613,17 +1636,25 @@ async function saveAutoUpdateConfig() {
 
 // ── GitHub Issue Submission ──────────────────────────────────────────────
 function submitGitHubIssue() {
-    const type = document.getElementById("issueType").value;
+    const typeRadio = document.querySelector('input[name="issueType"]:checked');
+    const type = typeRadio ? typeRadio.value : "bug";
     const title = document.getElementById("issueTitle").value.trim();
     const body = document.getElementById("issueBody").value.trim();
+    const contact = (document.getElementById("issueContact") || {}).value || "";
 
     if (!title) { showToast("Please enter a title", "error"); return; }
 
     const label = type === "bug" ? "bug" : "enhancement";
     const prefix = type === "bug" ? "[Bug] " : "[Feature] ";
-    const template = type === "bug"
-        ? body + "\n\n---\n**Environment:**\n- Q KB Explorer\n- Browser: " + navigator.userAgent.split(" ").slice(-2).join(" ")
-        : body;
+    const buildId = (document.getElementById("aboutBuildId") || {}).textContent || "unknown";
+
+    let template = body;
+    template += "\n\n---\n**Environment:**";
+    template += "\n- Q KB Explorer build: `" + buildId + "`";
+    template += "\n- Browser: " + navigator.userAgent.split(" ").slice(-2).join(" ");
+    if (contact.trim()) {
+        template += "\n\n**Contact:** " + contact.trim();
+    }
 
     const params = new URLSearchParams({
         title: prefix + title,
@@ -1637,6 +1668,7 @@ function submitGitHubIssue() {
     // Clear form
     document.getElementById("issueTitle").value = "";
     document.getElementById("issueBody").value = "";
+    if (document.getElementById("issueContact")) document.getElementById("issueContact").value = "";
     showToast("GitHub issue page opened — submit in the new tab", "info");
 }
 

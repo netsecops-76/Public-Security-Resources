@@ -1,6 +1,6 @@
 # Q KB Explorer — API Reference
 
-> Total endpoints: 58 routes (~53 unique paths + 1 page) | Base URL: `/api`
+> Total endpoints: 60 routes (~55 unique paths + 1 page) | Base URL: `/api`
 > Auth: Vault-based session cookie (`qkbe-vault-unlocked`, HttpOnly)
 
 ## Quick Reference Table
@@ -62,6 +62,8 @@
 | GET | `/api/update/check` | Check GitHub for new versions | Yes |
 | POST | `/api/update/apply` | Download and apply latest version | Yes |
 | GET | `/api/update/version` | Current deployed version SHA | Yes |
+| GET | `/api/update/schedule` | Auto-update schedule config | Yes |
+| POST | `/api/update/schedule` | Update auto-update schedule | Yes |
 
 ---
 

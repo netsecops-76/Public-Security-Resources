@@ -37,7 +37,7 @@ Q KB Explorer is a local caching and exploration tool for the Qualys Knowledge B
 ┌──────────────────────────▼───────────────────────────────────┐
 │                 Flask Application (main.py)                    │
 │  ┌─────────────┐  ┌──────────┐  ┌───────────────────┐       │
-│  │ Auth Gate    │  │ 53 API   │  │ CSV/PDF Export    │       │
+│  │ Auth Gate    │  │ 55 API   │  │ CSV/PDF Export    │       │
 │  │ (HttpOnly    │  │ Routes   │  │ (reportlab)       │       │
 │  │  cookies)   │  │ + CSRF   │  │                   │       │
 │  └─────────────┘  └──────────┘  └───────────────────┘       │
@@ -70,18 +70,18 @@ Q KB Explorer is a local caching and exploration tool for the Qualys Knowledge B
 
 | Module            | Responsibility                                        | File               | LOC   |
 |-------------------|-------------------------------------------------------|---------------------|-------|
-| Routes            | HTTP endpoints, request validation, auth gate, CSRF   | app/main.py         | 1,863 |
-| Database          | Schema, CRUD, FTS5 search, filter queries, migrations | app/database.py     | 2,306 |
+| Routes            | HTTP endpoints, request validation, auth gate, CSRF   | app/main.py         | 1,908 |
+| Database          | Schema, CRUD, FTS5 search, filter queries, migrations | app/database.py     | 2,357 |
 | Sync Engine       | Full/delta sync, chunking, watermarks, progress       | app/sync.py         | 449   |
 | Sync Log          | Event-level sync diagnostics, SQLite persistence      | app/sync_log.py     | 380   |
 | Qualys Client     | HTTP client, XML parsing, platform registry           | app/qualys_client.py| 365   |
-| Scheduler         | APScheduler background jobs, recurring syncs + maint  | app/scheduler.py    | 454   |
+| Scheduler         | APScheduler background jobs, syncs + maint + updates  | app/scheduler.py    | 579   |
 | Vault             | AES-256-GCM encryption, credential CRUD               | app/vault.py        | 255   |
 | Maintenance       | DB backup (gzip), VACUUM, ANALYZE, restore            | app/maintenance.py  | 183   |
-| Updater           | GitHub version check, tarball download, apply update   | app/updater.py      | 212   |
-| Frontend App      | SPA logic, shortcuts, bookmarks, search history       | app/static/js/app.js| 4,087 |
+| Updater           | GitHub version check, tarball download, apply update   | app/updater.py      | 228   |
+| Frontend App      | SPA logic, shortcuts, bookmarks, search history       | app/static/js/app.js| 4,205 |
 | Styles            | Dark/light themes, cards, badges, layout              | app/static/css/style.css | 1,155 |
-| Template          | Single-page HTML with 7 tabs, modals, help content    | app/templates/index.html | 1,201 |
+| Template          | Single-page HTML with 7 tabs, modals, help content    | app/templates/index.html | 1,237 |
 
 ## Data Flow
 

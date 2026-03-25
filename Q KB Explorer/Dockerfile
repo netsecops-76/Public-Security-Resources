@@ -12,6 +12,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application
 COPY app/ ./app/
 COPY entrypoint.sh .
+
+# Bake build version (git commit SHA) into the image
+ARG BUILD_VERSION=dev
+RUN echo "${BUILD_VERSION}" > /app/.current_version
 RUN chmod +x entrypoint.sh
 
 # Create certs directory (mount point for TLS)

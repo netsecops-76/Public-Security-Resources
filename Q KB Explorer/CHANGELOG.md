@@ -5,6 +5,12 @@
 ## [Unreleased]
 
 ### Added
+- Dynamic build ID in About section (git SHA from Docker build or auto-update)
+- Contact email field in bug/feature request form for follow-up
+- Build version and browser info auto-included in GitHub issue body
+- Post-update reload polls /api/health until server responds (replaces fixed 5s delay)
+- Dockerfile BUILD_VERSION arg bakes git SHA into image at build time
+- Auto-update scheduling (weekly cron with day/time picker in Settings)
 - Supported modules (agent type) display and filtering on QID tab
 - Module badges on QID search result cards (sky-blue)
 - Supported Modules multi-select filter in QID advanced filters
@@ -29,6 +35,8 @@
 - Sync dependency chain documented in Help tab (QIDs → CIDs → Policies → Mandates)
 
 ### Changed
+- About section shows dynamic build ID (git commit SHA) instead of static "v1.0.0"
+- Bug/feature request form uses radio buttons instead of dropdown for better dark theme readability
 - All browse tabs now CSV-only (PDF removed due to reportlab layout issues with large content fields)
 - Bulk CSV export is now unlimited (removed 200-item cap)
 - Select mode now hides regular export buttons to prevent accidental full-result exports
