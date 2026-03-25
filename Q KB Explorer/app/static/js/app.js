@@ -4048,18 +4048,26 @@ function renderSyncHealth(sync) {
             <td>${count}</td>
             <td>${lastSync}</td>
             <td>${lastFull}</td>
-            <td><span class="health-dot ${health.cls}"></span>${health.label}</td>
+            <td title="${health.tooltip}" style="cursor:help;"><span class="health-dot ${health.cls}"></span>${health.label}</td>
         </tr>`;
     }).join("");
 }
 
 function _syncHealthStatus(syncState) {
-    if (!syncState.last_sync) return { cls: "health-red", label: "Never synced" };
+    if (!syncState.last_sync) {
+        return { cls: "health-red", label: "Never synced", tooltip: "No sync has been performed yet for this data type." };
+    }
     const age = Date.now() - new Date(syncState.last_sync).getTime();
-    const days = age / (1000 * 60 * 60 * 24);
-    if (days < 7) return { cls: "health-green", label: "Healthy" };
-    if (days < 30) return { cls: "health-orange", label: "Aging" };
-    return { cls: "health-red", label: "Stale" };
+    const days = Math.floor(age / (1000 * 60 * 60 * 24));
+    const daysText = days === 0 ? "today" : days === 1 ? "1 day ago" : days + " days ago";
+
+    if (days < 7) {
+        return { cls: "health-green", label: "Healthy", tooltip: "Last synced " + daysText + ". Data is fresh (synced within the last 7 days)." };
+    }
+    if (days < 30) {
+        return { cls: "health-orange", label: "Aging", tooltip: "Last synced " + daysText + ". Data is aging (7\u201330 days old). Consider running a delta sync." };
+    }
+    return { cls: "health-red", label: "Stale", tooltip: "Last synced " + daysText + ". Data is stale (over 30 days old). A full sync is recommended." };
 }
 
 function renderDbHealth(dbh) {
