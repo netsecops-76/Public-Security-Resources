@@ -762,6 +762,8 @@ redactBtn.addEventListener('click', () => {
   redactEnabled = !redactEnabled;
   redactBtn.classList.toggle('active', redactEnabled);
   redactBtn.innerHTML = redactEnabled ? '<span class="icon">&#128274;</span> Redact' : '<span class="icon">&#128275;</span> Show All';
+  const tab = allTabs[currentTabIdx];
+  if (tab) tab.source === 'csv' ? renderCSVBanner(tab) : renderLogBanner(tab);
   renderLog();
 });
 
@@ -794,6 +796,14 @@ async function handleFiles(files) {
   }
   hideLoading();
   if (!allTabs.length) { alert('No parseable log data found.'); return; }
+
+  // Share CAPI host details across sibling tabs from the same upload
+  const capiSource = allTabs.find(t => t.meta?.capi);
+  if (capiSource) {
+    for (const t of allTabs) {
+      if (t.source === 'log' && !t.meta.capi) t.meta.capi = capiSource.meta.capi;
+    }
+  }
 
   allTabs.sort((a, b) => {
     if (a.hasErrors !== b.hasErrors) return a.hasErrors ? -1 : 1;
@@ -1224,7 +1234,49 @@ function handleLogFile(text, filename) {
     meta: { filename, firstTime: timestamps[0] || '', lastTime: timestamps[timestamps.length - 1] || '', lineCount: parsed.length, pids },
     hasErrors: ec > 0, warnCount: wc, errCount: ec,
   });
+  // Extract CAPI metadata from cloud-agent logs
+  if (logType === 'cloud-agent') {
+    const capi = extractCapiMeta(text);
+    if (capi) allTabs[allTabs.length - 1].meta.capi = capi;
+  }
   typeBadge.textContent = logTypeName(logType); typeBadge.className = 'log-type-badge ' + logType; typeBadge.style.display = '';
+}
+
+function extractCapiMeta(rawText) {
+  const marker = 'CAPI request json payload:';
+  const idx = rawText.indexOf(marker);
+  if (idx === -1) return null;
+  // Find the next line after the marker
+  const afterMarker = rawText.indexOf('\n', idx);
+  if (afterMarker === -1) return null;
+  const lineEnd = rawText.indexOf('\n', afterMarker + 1);
+  const jsonLine = lineEnd === -1 ? rawText.slice(afterMarker + 1) : rawText.slice(afterMarker + 1, lineEnd);
+  try {
+    const payload = JSON.parse(jsonLine.trim());
+    const d = payload.Data || payload.data || {};
+    const agent = d.Agent || {};
+    const client = d.Client || {};
+    const provider = d.Provider || {};
+    return {
+      hostname: client.ComputerName || '',
+      fqdn: client.FQDN || '',
+      ipv4: client.IPv4 || '',
+      ipv6: client.IPv6 || '',
+      macAddress: client.MacAddress || '',
+      os: client.OS || '',
+      osVersion: client.OsVersion || '',
+      architecture: client.Architecture || '',
+      agentId: agent.AgentID || '',
+      agentVersion: agent.AgentVersion || '',
+      platform: agent.Platform || '',
+      customerId: agent.CustomerID || '',
+      provider: provider.ProviderName || '',
+      instanceId: provider.InstanceID || '',
+    };
+  } catch (e) {
+    console.warn('Failed to parse CAPI JSON payload:', e);
+    return null;
+  }
 }
 
 function logTypeName(t) {
@@ -1532,13 +1584,33 @@ function renderCSVBanner(tab) {
 
 function renderLogBanner(tab) {
   const m = tab.meta;
+  let html = '';
+
+  // Rich host details from CAPI payload (if available)
+  if (m.capi) {
+    const c = m.capi;
+    const rv = (v) => redactEnabled ? applyRedact(esc(v)) : esc(v);
+    const providerLabel = c.provider && c.provider !== 'NONE' ? c.provider : '';
+    const hostFields = [
+      ['Host', c.hostname, ''], ['OS', c.os + (c.architecture ? ' (' + c.architecture + ')' : ''), ''],
+      ['Agent UUID', c.agentId, ''], ['Agent Version', c.agentVersion, ''],
+      ['Platform', c.platform, ''], ['Provider', providerLabel, ''],
+      ['IPv4', c.ipv4, ''], ['FQDN', c.fqdn, ''],
+    ];
+    html += '<div class="asset-banner">' + hostFields.filter(([, v]) => v)
+      .map(([l, v, cls]) => `<div class="field"><span class="label">${l}:</span><span class="value ${cls}">${rv(v)}</span></div>`).join('') + '</div>';
+  }
+
+  // Summary row (always shown)
   const fields = [['File', m.filename, ''], ['Type', logTypeName(tab.logType), ''],
     ['Time Range', m.firstTime && m.lastTime ? m.firstTime + ' \u2014 ' + m.lastTime : '', ''],
     ['Lines', String(tab.lines.length), ''], ['Errors', tab.errCount > 0 ? String(tab.errCount) : '', tab.errCount > 0 ? 'has-errors' : ''],
     ['Warnings', tab.warnCount > 0 ? String(tab.warnCount) : '', tab.warnCount > 0 ? 'has-warnings' : ''],
     ['PIDs', m.pids?.join(', ') || '', '']];
-  bannerContainer.innerHTML = '<div class="summary-banner">' + fields.filter(([, v]) => v)
+  html += '<div class="summary-banner">' + fields.filter(([, v]) => v)
     .map(([l, v, c]) => `<div class="field"><span class="label">${l}:</span><span class="value ${c}">${esc(v)}</span></div>`).join('') + '</div>';
+
+  bannerContainer.innerHTML = html;
 }
 
 // ===== Rendering =====
@@ -1730,7 +1802,7 @@ searchBox.addEventListener('input', () => {
 });
 
 // --- Version check against GitHub ---
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.0.3';
 const REPO_URL = 'https://github.com/netsecops-76/Public-Security-Resources/tree/Qualys-Cloud-Agent-Log-Viewer';
 const VERSION_RAW_URL = 'https://raw.githubusercontent.com/netsecops-76/Public-Security-Resources/Qualys-Cloud-Agent-Log-Viewer/version.txt';
 
