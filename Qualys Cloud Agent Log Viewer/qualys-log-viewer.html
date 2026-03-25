@@ -650,6 +650,12 @@
     </ul>
     <p>Double-compressed archives (LZMA wrapping gzip, or 7z inside ZIP) are detected and handled automatically.</p>
 
+    <h3 id="versionCheckHelp">Version Check</h3>
+    <p>On page load, the viewer checks for updates by fetching a version file from the <a href="https://github.com/netsecops-76/Public-Security-Resources/tree/Qualys-Cloud-Agent-Log-Viewer" target="_blank" rel="noopener">GitHub repository</a>. If a newer version is available, a yellow badge appears in the header with a link to download the update.</p>
+    <p><strong>Update check unavailable?</strong> SSL-inspecting proxies such as <strong>Zscaler</strong>, <strong>Netskope</strong>, or corporate firewalls can block outbound requests to <code>raw.githubusercontent.com</code>, preventing the version check from completing. When this happens, the badge will show <em>"Update check unavailable"</em> instead of a version status. This does not affect any viewer functionality &mdash; all log parsing and analysis works fully offline.</p>
+    <p>To manually check for updates, visit the repository directly:</p>
+    <p><a href="https://github.com/netsecops-76/Public-Security-Resources/tree/Qualys-Cloud-Agent-Log-Viewer" target="_blank" rel="noopener">github.com/netsecops-76/Public-Security-Resources &rarr; Qualys-Cloud-Agent-Log-Viewer branch</a></p>
+
     <h3>Browser Requirements</h3>
     <p>Chrome 105+, Edge 105+, Firefox 113+, or Safari 16.4+. The 7z decoder requires network access to jsDelivr CDN.</p>
 
@@ -1822,7 +1828,7 @@ const VERSION_RAW_URL = 'https://raw.githubusercontent.com/netsecops-76/Public-S
     })
     .catch(() => {
       badge.className = 'version-badge error';
-      badge.textContent = 'v' + APP_VERSION;
+      badge.innerHTML = 'v' + APP_VERSION + ' &mdash; <a href="#" onclick="event.preventDefault();document.getElementById(\'helpOverlay\').classList.add(\'open\');document.getElementById(\'versionCheckHelp\').scrollIntoView({behavior:\'smooth\'});" style="color:var(--text-dim);text-decoration:underline;text-underline-offset:2px;">Update check unavailable</a>';
     });
 })();
 </script>
