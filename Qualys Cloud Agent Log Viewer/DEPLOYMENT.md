@@ -95,6 +95,7 @@ az storage blob upload --container-name '$web' \
 | Linux REMOTELOG (LZMA) | None | LZMA decoder is embedded inline |
 | ZIP / tar.gz / gzip | None | Browser-native decompression |
 | Windows REMOTELOG (7z) | jsDelivr CDN | Loads ~80KB JS + ~1.6MB WASM on first 7z file |
+| Version check | `raw.githubusercontent.com` | Fetches `version.txt` on page load to check for updates |
 
 ### Air-Gapped / Offline Environments
 
@@ -130,27 +131,37 @@ If deploying behind a CSP, you need to allow:
 
 ```
 script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net;
-connect-src 'self' https://cdn.jsdelivr.net;
+connect-src 'self' https://cdn.jsdelivr.net https://raw.githubusercontent.com;
 ```
 
-Remove the `cdn.jsdelivr.net` entries if you self-host the 7z-wasm files.
+- Remove `cdn.jsdelivr.net` if you self-host the 7z-wasm files
+- Remove `raw.githubusercontent.com` if you don't need the automatic version check
 
 ### File Size
 
 The HTML file is approximately 60KB — small enough to email, embed in wikis, or distribute via any file sharing method.
 
-## Updating
+## Version Check & Updating
 
-Since it's a single file, updating is just replacing `qualys-log-viewer.html`:
+The viewer includes an automatic version check. On page load, it fetches `version.txt` from the GitHub repository and compares it to the embedded `APP_VERSION`. If a newer version is available, a yellow badge appears in the header with a link to the repository.
+
+**SSL-inspecting proxies** (Zscaler, Netskope, corporate firewalls) may block the request to `raw.githubusercontent.com`. When this happens, the badge shows "Update check unavailable" with a link to the Help panel explaining the issue. No viewer functionality is affected.
+
+Since it's a single file, updating is just replacing `qualys-log-viewer.html` and `version.txt`:
 
 ```bash
 # Pull latest from GitHub
 cd /path/to/qualys-log-viewer
-git pull origin main
+git pull origin Qualys-Cloud-Agent-Log-Viewer
 
 # Or download directly
 curl -LO https://github.com/netsecops-76/Public-Security-Resources/raw/Qualys-Cloud-Agent-Log-Viewer/Qualys%20Cloud%20Agent%20Log%20Viewer/qualys-log-viewer.html
 ```
+
+When releasing a new version:
+1. Update the `APP_VERSION` constant in `qualys-log-viewer.html`
+2. Update `version.txt` to match
+3. Commit and push both files
 
 ## Embedding in Other Tools
 
@@ -174,3 +185,5 @@ Note: File drag-and-drop into iframes may require the `allow` attribute and same
 | 7z extraction fails | No internet / CDN blocked | Pre-extract 7z files with 7-Zip, or self-host the WASM decoder |
 | Large file is slow | File > 50K lines | Use level filters to reduce visible lines. Groups auto-collapse after 500 lines |
 | CORS error in iframe | Cross-origin hosting | Host the HTML on the same origin as the parent page |
+| "Update check unavailable" | Proxy blocking GitHub | Zscaler/Netskope/corporate proxy blocking `raw.githubusercontent.com`. No impact on functionality. Check the repo directly for updates |
+| Host details not showing | Not a cloud-agent log | CAPI host details are only available in `qualys-cloud-agent.log`. Other log types show the summary banner only |

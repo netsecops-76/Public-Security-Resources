@@ -4,6 +4,8 @@ A single-file HTML tool for parsing and analyzing Qualys Cloud Agent log files. 
 
 No server, no install, no build step. Just open `qualys-log-viewer.html` in any modern browser.
 
+**Current Version:** 1.0.3
+
 ## Quick Start
 
 1. Open `qualys-log-viewer.html` in Chrome, Edge, Firefox, or Safari
@@ -44,13 +46,28 @@ The viewer handles Qualys REMOTELOG bundles from both Linux and Windows agents a
 
 ## Features
 
+### Host Details Banner
+
+When viewing `qualys-cloud-agent.log` files, the viewer automatically extracts host metadata from the CAPI JSON payload and displays a rich details banner:
+
+- **Host** — Computer name
+- **OS** — Full OS name and architecture
+- **Agent UUID** — Agent identifier
+- **Agent Version** — Installed agent version
+- **Platform** — Linux or Windows
+- **Provider** — Cloud provider (Azure, AWS, GCP) if applicable
+- **IPv4** — Primary IP address
+- **FQDN** — Fully qualified domain name
+
+When multiple log files are loaded from the same archive, all tabs inherit the host details from the cloud-agent log.
+
 ### Toolbar Controls
 
-- **Search** — Real-time full-text search across all log messages
+- **Search** — Real-time partial-match search across all log messages. Multiple words are matched independently (AND logic) — typing `scan manifest` finds lines containing both words anywhere, in any order. Each matching term is highlighted
 - **Level Filters** — Filter by All, Trace, Debug, Info, Warning, or Error
-- **Redact** — Toggle sensitive data redaction (on by default). Masks CustomerIDs, AgentIDs, IPs, MAC addresses, HMAC tokens, UUIDs in URLs, and FQDN values. Redaction is display-only — search still works on original values
+- **Redact** — Toggle sensitive data redaction (on by default). Masks CustomerIDs, AgentIDs, IPs, MAC addresses, HMAC tokens, UUIDs in URLs, and FQDN values. Redaction applies to both the log view and the host details banner. Search still works on original values
 - **Sort Order** — Toggle between Newest First (default) and Oldest First. Qualys logs are written oldest-to-newest, but troubleshooting usually starts from the latest entries
-- **New File** — Reset and load different files
+- **New File** — Reset and load different files. Also available in the header bar for quick access
 
 ### Smart Grouping
 
@@ -104,6 +121,18 @@ The viewer identifies log types using two methods:
 Two log line formats are supported:
 - **Standard Qualys format**: `YYYY-MM-DD HH:MM:SS.mmm +0000 [process][PID]:[Level]:[ThreadID]:Message`
 - **Go logrus format** (agentid.log): `time="..." level=info msg="..."`
+
+## Version Check
+
+On page load, the viewer checks for updates by fetching `version.txt` from the GitHub repository. The header badge shows the result:
+
+| Status | Badge |
+|---|---|
+| Up to date | ✓ v1.0.3 — Latest (green) |
+| Update available | ⚠ vX.X.X Available — Update (yellow, with link) |
+| Check blocked | v1.0.3 — Update check unavailable (gray, with help link) |
+
+**Note:** SSL-inspecting proxies (Zscaler, Netskope, corporate firewalls) may block outbound requests to `raw.githubusercontent.com`, preventing the version check. This does not affect any viewer functionality — all log parsing works fully offline. Click the "Update check unavailable" link for details, or check the repository directly for updates.
 
 ## Browser Requirements
 
