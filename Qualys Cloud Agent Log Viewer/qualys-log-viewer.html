@@ -612,7 +612,7 @@
 
     <h3>Toolbar Controls</h3>
     <ul>
-      <li><strong>Search</strong> &mdash; Real-time full-text search across all log messages. Matches are highlighted in yellow.</li>
+      <li><strong>Search</strong> &mdash; Real-time partial-match search across all log messages. Multiple words are matched independently (AND logic). Matches are highlighted in yellow.</li>
       <li><strong>Level Filters</strong> (All / Trace / Debug / Info / Warn / Error) &mdash; Show only log lines at the selected severity level. Error filter also includes PowerShell error blocks.</li>
       <li><strong>Redact</strong> &mdash; Toggle sensitive data masking (on by default). Redacts CustomerIDs, AgentIDs, IPs, MAC addresses, serial numbers, HMAC tokens, and UUIDs in URLs. Redaction is display-only &mdash; search still works on original values.</li>
       <li><strong>Newest First / Oldest First</strong> &mdash; Toggle sort order. Default is newest first since troubleshooting usually starts from the latest entries.</li>
@@ -1564,7 +1564,13 @@ function renderLog() {
     });
   }
   const search = currentSearch.toLowerCase();
-  if (search) lines = lines.filter(l => (l.raw || l.message || '').toLowerCase().includes(search));
+  if (search) {
+    const terms = search.split(/\s+/).filter(Boolean);
+    lines = lines.filter(l => {
+      const text = (l.raw || l.message || '').toLowerCase();
+      return terms.every(t => text.includes(t));
+    });
+  }
 
   const sorted = newestFirst ? [...lines].reverse() : lines;
   const groups = groupLines(sorted, tab.logType);
@@ -1659,7 +1665,13 @@ function renderGroup(group, search, startCollapsed) {
 
 // ===== Utilities =====
 function esc(s) { return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
-function hilite(html, term) { return html.replace(new RegExp(`(${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi'), '<span class="highlight">$1</span>'); }
+function hilite(html, search) {
+  const terms = search.split(/\s+/).filter(Boolean);
+  for (const t of terms) {
+    html = html.replace(new RegExp(`(${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi'), '<span class="highlight">$1</span>');
+  }
+  return html;
+}
 function applyRedact(html) { for (const p of SENSITIVE_PATTERNS) html = html.replace(p.re, p.rep); return html; }
 function redactJson(str) {
   for (const k of ['CustomerID','AgentID','AgentUuid','BiosSerialNumber','BiosHardwareUUID','MacAddress','IPv4','IPv6','FQDN','NetBiosName','ReconciliationID','InstanceID','instanceId','vmId','ComputerName'])
