@@ -648,8 +648,14 @@ async function initApp() {
         });
     }
 
-    // Auto-load dashboard (default active tab)
-    loadDashboard();
+    // Restore tab on refresh, default to dashboard on fresh load
+    const savedTab = sessionStorage.getItem("qkbe_active_tab");
+    if (savedTab && document.getElementById("tab-" + savedTab)) {
+        switchTab(savedTab);
+    } else {
+        loadDashboard();
+    }
+    window.scrollTo(0, 0);
 
     // Start session timeout monitor if configured
     initSessionTimeout();
@@ -777,6 +783,8 @@ function switchTab(tabName) {
     const btn = document.querySelector(`.tab-btn[data-tab="${tabName}"]`);
     if (content) content.classList.add("active");
     if (btn) btn.classList.add("active");
+    sessionStorage.setItem("qkbe_active_tab", tabName);
+    window.scrollTo(0, 0);
 
     // Auto-load records on first visit to a tab
     if (tabName === "dashboard" && !_tabLoaded.dashboard) {
@@ -1533,7 +1541,7 @@ async function applyUpdate() {
                 if (attempt > 10) { statusEl.innerHTML += '<br>Server is taking longer than expected. Please refresh manually.'; return; }
                 try {
                     const h = await fetch("/api/health", { signal: AbortSignal.timeout(3000) });
-                    if (h.ok) { window.location.reload(); return; }
+                    if (h.ok) { sessionStorage.removeItem("qkbe_active_tab"); window.location.reload(); return; }
                 } catch (_) {}
                 setTimeout(() => _waitForServer(attempt + 1), 2000);
             };
