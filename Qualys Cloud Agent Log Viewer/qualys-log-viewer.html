@@ -1877,7 +1877,7 @@ const VERSION_RAW_URL = 'https://raw.githubusercontent.com/netsecops-76/Public-S
         badge.innerHTML = '&#10003; v' + APP_VERSION + ' &mdash; Latest';
       } else {
         badge.className = 'version-badge update-available';
-        badge.innerHTML = '&#9888; v' + v + ' Available &mdash; <a href="' + REPO_URL + '/releases" target="_blank" rel="noopener">Update</a>';
+        badge.innerHTML = '&#9888; v' + v + ' Available &mdash; <a href="' + REPO_URL + '" target="_blank" rel="noopener">Update</a>';
       }
     })
     .catch(() => {
