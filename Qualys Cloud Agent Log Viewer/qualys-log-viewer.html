@@ -644,11 +644,12 @@
     <h3>Compression &amp; Archives</h3>
     <p>The viewer handles multiple compression formats transparently:</p>
     <ul>
-      <li><strong>Gzip</strong> &amp; <strong>Deflate</strong> &mdash; Browser-native, no dependencies</li>
+      <li><strong>Gzip</strong> &mdash; Inline fflate decoder with truncation-tolerant streaming. Recovers all decompressed data up to the truncation point in agent-truncated REMOTELOG bundles.</li>
+      <li><strong>Deflate</strong> &mdash; Browser-native (used for ZIP internal decompression)</li>
       <li><strong>LZMA</strong> &mdash; Inline JavaScript decoder for Linux REMOTELOG bundles</li>
       <li><strong>7z / LZMA2</strong> &mdash; Loaded from CDN on first use (requires internet). Falls back to manual extraction instructions if offline.</li>
     </ul>
-    <p>Double-compressed archives (LZMA wrapping gzip, or 7z inside ZIP) are detected and handled automatically.</p>
+    <p>Double-compressed archives (LZMA wrapping gzip, or 7z inside ZIP) are detected and handled automatically. Truncated archives (common with Linux REMOTELOG bundles that hit agent collection size limits) are handled gracefully &mdash; partial data is recovered rather than discarded.</p>
 
     <h3 id="versionCheckHelp">Version Check</h3>
     <p>On page load, the viewer checks for updates by fetching a version file from the <a href="https://github.com/netsecops-76/Public-Security-Resources/tree/Qualys-Cloud-Agent-Log-Viewer" target="_blank" rel="noopener">GitHub repository</a>. If a newer version is available, a yellow badge appears in the header with a link to download the update.</p>
