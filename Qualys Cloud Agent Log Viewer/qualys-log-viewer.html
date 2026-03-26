@@ -652,7 +652,7 @@
     <p>Double-compressed archives (LZMA wrapping gzip, or 7z inside ZIP) are detected and handled automatically. Truncated archives (common with Linux REMOTELOG bundles that hit agent collection size limits) are handled gracefully &mdash; partial data is recovered rather than discarded.</p>
 
     <h3 id="versionCheckHelp">Version Check</h3>
-    <p>On page load, the viewer checks for updates by fetching a version file from the <a href="https://github.com/netsecops-76/Public-Security-Resources/tree/Qualys-Cloud-Agent-Log-Viewer" target="_blank" rel="noopener">GitHub repository</a>. If a newer version is available, a yellow badge appears in the header with a link to download the update.</p>
+    <p>On page load, the viewer checks for updates by fetching a version file from the <a href="https://github.com/netsecops-76/Public-Security-Resources/tree/Qualys-Cloud-Agent-Log-Viewer" target="_blank" rel="noopener">GitHub repository</a>. If a newer version is available, a yellow badge appears in the header with a link to download the update. The badge also shows how many versions behind you are (e.g., <strong>N-1</strong> = one version behind, <strong>N-3</strong> = three versions behind) so you can gauge how stale your copy is.</p>
     <p><strong>Update check unavailable?</strong> SSL-inspecting proxies such as <strong>Zscaler</strong>, <strong>Netskope</strong>, or corporate firewalls can block outbound requests to <code>raw.githubusercontent.com</code>, preventing the version check from completing. When this happens, the badge will show <em>"Update check unavailable"</em> instead of a version status. This does not affect any viewer functionality &mdash; all log parsing and analysis works fully offline.</p>
     <p>To manually check for updates, visit the repository directly:</p>
     <p><a href="https://github.com/netsecops-76/Public-Security-Resources/tree/Qualys-Cloud-Agent-Log-Viewer" target="_blank" rel="noopener">github.com/netsecops-76/Public-Security-Resources &rarr; Qualys-Cloud-Agent-Log-Viewer branch</a></p>
@@ -1863,22 +1863,45 @@ searchBox.addEventListener('input', () => {
 });
 
 // --- Version check against GitHub ---
-const APP_VERSION = '1.0.5';
+const APP_VERSION = '1.0.6';
 const REPO_URL = 'https://github.com/netsecops-76/Public-Security-Resources/tree/Qualys-Cloud-Agent-Log-Viewer';
 const VERSION_RAW_URL = 'https://raw.githubusercontent.com/netsecops-76/Public-Security-Resources/Qualys-Cloud-Agent-Log-Viewer/version.txt';
+
+function parseSemver(s) {
+  const p = s.trim().split('.').map(Number);
+  return { major: p[0]||0, minor: p[1]||0, patch: p[2]||0 };
+}
+function compareSemver(a, b) {
+  const va = parseSemver(a), vb = parseSemver(b);
+  if (va.major !== vb.major) return va.major < vb.major ? -1 : 1;
+  if (va.minor !== vb.minor) return va.minor < vb.minor ? -1 : 1;
+  if (va.patch !== vb.patch) return va.patch < vb.patch ? -1 : 1;
+  return 0;
+}
 
 (function checkVersion() {
   const badge = $('versionBadge');
   fetch(VERSION_RAW_URL, { cache: 'no-store' })
     .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
-    .then(remote => {
-      const v = remote.trim();
-      if (v === APP_VERSION) {
+    .then(body => {
+      const versions = body.split('\n').map(s => s.trim()).filter(Boolean);
+      if (!versions.length) throw new Error('Empty version file');
+      const latest = versions[0];
+      if (compareSemver(APP_VERSION, latest) >= 0) {
         badge.className = 'version-badge latest';
         badge.innerHTML = '&#10003; v' + APP_VERSION + ' &mdash; Latest';
       } else {
+        const idx = versions.indexOf(APP_VERSION);
+        let behind;
+        if (idx > 0) {
+          behind = idx;
+        } else {
+          behind = versions.filter(v => compareSemver(v, APP_VERSION) > 0).length;
+        }
+        const behindTag = behind > 0 ? ' (N-' + behind + ')' : '';
         badge.className = 'version-badge update-available';
-        badge.innerHTML = '&#9888; v' + v + ' Available &mdash; <a href="' + REPO_URL + '" target="_blank" rel="noopener">Update</a>';
+        badge.innerHTML = '&#9888; v' + latest + ' Available' + behindTag +
+          ' &mdash; <a href="' + REPO_URL + '" target="_blank" rel="noopener">Update</a>';
       }
     })
     .catch(() => {
