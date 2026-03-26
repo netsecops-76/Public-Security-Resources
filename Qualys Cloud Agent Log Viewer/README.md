@@ -107,7 +107,7 @@ The viewer handles multiple compression formats transparently:
 
 | Format | Method | Notes |
 |---|---|---|
-| **Gzip** | Browser-native `DecompressionStream` | Standard `.tar.gz` files |
+| **Gzip** | Inline [fflate](https://github.com/101arrowz/fflate) decoder (MIT) — truncation-tolerant | Standard `.tar.gz` files |
 | **LZMA** | Inline JS decoder ([js-lzma](https://github.com/jcmellado/js-lzma), MIT) | Linux REMOTELOG bundles |
 | **LZMA > Gzip** | Auto-detected double decompression | Some Linux REMOTELOG formats |
 | **Deflate** | Browser-native `DecompressionStream` | ZIP entry extraction |
@@ -151,4 +151,5 @@ Apache 2.0
 ## Credits
 
 - LZMA decoder: [js-lzma](https://github.com/jcmellado/js-lzma) by Juan Mellado (MIT)
+- Gzip decoder: [fflate](https://github.com/101arrowz/fflate) by 101arrowz (MIT)
 - 7z WASM decoder: [7z-wasm](https://github.com/use-strict/7z-wasm) (LGPL, loaded from CDN)
