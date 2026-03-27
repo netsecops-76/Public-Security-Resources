@@ -214,6 +214,85 @@
   .summary-banner .value.has-errors { color: var(--error); }
   .summary-banner .value.has-warnings { color: var(--warn); }
 
+  .time-filter-row {
+    background: var(--surface);
+    padding: 8px 24px 10px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    border-top: 1px solid var(--border);
+    font-size: 12px;
+  }
+  .time-filter-row .tf-label { color: var(--text-dim); font-size: 12px; white-space: nowrap; flex-shrink: 0; }
+  .time-filter-row .tf-time { color: var(--text); font-size: 11px; font-family: 'SF Mono', 'Menlo', monospace; white-space: nowrap; min-width: 130px; text-align: center; }
+  .time-filter-row .tf-clear {
+    padding: 3px 7px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--surface2);
+    color: var(--text-dim);
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .time-filter-row .tf-clear:hover { border-color: var(--accent); color: var(--text); }
+
+  .range-slider {
+    flex: 1;
+    position: relative;
+    height: 28px;
+    min-width: 200px;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;
+  }
+  .range-slider .rs-track {
+    position: absolute;
+    top: 12px;
+    left: 0; right: 0;
+    height: 4px;
+    background: var(--surface2);
+    border-radius: 2px;
+  }
+  .range-slider .rs-fill {
+    position: absolute;
+    top: 12px;
+    height: 4px;
+    background: var(--accent);
+    border-radius: 2px;
+    pointer-events: none;
+  }
+  .range-slider .rs-handle {
+    position: absolute;
+    top: 4px;
+    width: 20px;
+    height: 20px;
+    cursor: grab;
+    transform: translateX(-50%);
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .range-slider .rs-handle::after {
+    content: '\25C0';
+    font-size: 22px;
+    color: var(--warn);
+    line-height: 1;
+    transition: color 0.15s;
+    filter: drop-shadow(0 1px 2px rgba(0,0,0,0.4));
+  }
+  .range-slider .rs-handle[data-which="to"]::after {
+    content: '\25B6';
+  }
+  .range-slider .rs-handle:hover, .range-slider .rs-handle.dragging {
+    cursor: grabbing;
+  }
+  .range-slider .rs-handle:hover::after, .range-slider .rs-handle.dragging::after {
+    color: #ffd866;
+  }
+
   .asset-banner {
     background: var(--surface);
     padding: 12px 24px;
@@ -247,15 +326,15 @@
     width: 28px;
     min-width: 28px;
     background: var(--header-bg);
-    color: var(--text-dim);
+    color: var(--warn);
     border: none;
     cursor: pointer;
-    font-size: 12px;
+    font-size: 16px;
     padding: 0;
     z-index: 2;
     transition: color 0.15s;
   }
-  .tab-arrow:hover { color: var(--text); }
+  .tab-arrow:hover { color: #ffd866; }
   .tab-arrow.visible { display: flex; }
 
   .tab-bar {
@@ -517,6 +596,57 @@
     padding: 0 3px; border-radius: 2px; font-size: 10px; font-weight: 600;
   }
 
+  /* JSON viewer */
+  .json-viewer {
+    padding: 24px; font-family: 'SF Mono', Menlo, monospace; font-size: 13px; line-height: 1.6;
+  }
+  .json-viewer .jv-key { color: var(--json-key); }
+  .json-viewer .jv-str { color: var(--json-str); }
+  .json-viewer .jv-num { color: var(--json-num); }
+  .json-viewer .jv-bool { color: var(--json-bool); }
+  .json-viewer .jv-null { color: var(--text-dim); font-style: italic; }
+  .json-viewer .jv-bracket { color: var(--text-dim); }
+  .json-viewer .jv-indent { padding-left: 20px; }
+  .json-viewer .jv-good { background: rgba(166, 227, 161, 0.15); border-radius: 3px; padding: 0 4px; }
+  .json-viewer .jv-bad { background: rgba(243, 139, 168, 0.15); border-radius: 3px; padding: 0 4px; }
+
+  /* Directory listing table */
+  .dir-table-wrap { padding: 16px 24px; overflow-x: auto; }
+  .dir-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .dir-table th {
+    text-align: left; padding: 8px 12px; color: var(--text-dim); font-weight: 600;
+    border-bottom: 2px solid var(--border); white-space: nowrap; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .dir-table td { padding: 6px 12px; border-bottom: 1px solid var(--border); }
+  .dir-table tr:hover td { background: var(--surface2); }
+  .dir-table .dir-folder { color: var(--warn); font-weight: 500; }
+  .dir-table .dir-file { color: var(--text); }
+  .dir-table .dir-size { text-align: right; color: var(--text-dim); font-family: 'SF Mono', Menlo, monospace; }
+  .dir-table .dir-hash { color: var(--text-dim); font-family: 'SF Mono', Menlo, monospace; font-size: 11px; }
+
+  /* Health check report */
+  .hc-report { padding: 24px; max-width: 900px; }
+  .hc-section { margin-bottom: 24px; }
+  .hc-section-title {
+    font-size: 15px; font-weight: 600; color: var(--accent); margin-bottom: 12px;
+    padding-bottom: 6px; border-bottom: 1px solid var(--border);
+  }
+  .hc-item {
+    padding: 8px 12px; margin-bottom: 4px; background: var(--surface); border-radius: 6px;
+    display: flex; gap: 12px; align-items: baseline;
+  }
+  .hc-num { color: var(--text-dim); font-size: 11px; font-weight: 600; white-space: nowrap; min-width: 140px; }
+  .hc-desc { color: var(--text); }
+  .hc-kv {
+    padding: 4px 12px 4px 24px; display: flex; gap: 8px; font-size: 13px;
+  }
+  .hc-key { color: var(--text-dim); min-width: 180px; }
+  .hc-val { color: var(--text); font-weight: 500; }
+  .hc-val.hc-pass { color: var(--success); }
+  .hc-val.hc-fail { color: var(--error); }
+  .hc-val.hc-warn { color: var(--warn); }
+  .hc-line { padding: 2px 12px; color: var(--text-dim); font-size: 13px; }
+
   .loading-overlay {
     position: fixed; top: 0; left: 0; right: 0; bottom: 0;
     background: rgba(30, 30, 46, 0.9); display: flex; flex-direction: column;
@@ -694,7 +824,13 @@
       <tr><td>Multiplexer</td><td><code>qualys-mux.log</code></td><td>Multiplexer module activity</td></tr>
       <tr><td>Agent ID</td><td><code>agentid.log</code></td><td>Agent identification service (Go logrus format)</td></tr>
       <tr><td>CAR Reports</td><td><code>.csv</code></td><td>CAR report exports with per-asset tabs</td></tr>
-      <tr><td>Windows Logs</td><td><code>Log.txt</code>, <code>communicationlog.txt</code>, etc.</td><td>Windows agent logs from REMOTELOG bundles</td></tr>
+      <tr><td>Windows Agent</td><td><code>Log.txt</code>, <code>communicationlog.txt</code>, <code>commandlog.txt</code>, <code>patchlog.txt</code>, <code>statusmanager.txt</code>, etc.</td><td>Windows agent logs (MM/DD/YYYY format with PID/thread)</td></tr>
+      <tr><td>Installer</td><td><code>CloudAgentInstaller.log</code></td><td>Cloud Agent setup engine with bracketed timestamps</td></tr>
+      <tr><td>Sync</td><td><code>Sync.log</code></td><td>Manifest synchronizer with ISO 8601 nanosecond timestamps</td></tr>
+      <tr><td>MSI</td><td><code>MsiLog_*.LOG</code></td><td>Windows Installer verbose logs with time-only stamps</td></tr>
+      <tr><td>Health Check JSON</td><td><code>*health_check*.json</code></td><td>Structured health report &mdash; pretty-printed with status highlighting</td></tr>
+      <tr><td>Health Check TXT</td><td><code>*health_check*.txt</code></td><td>Text health report &mdash; rendered as structured checklist with Pass/Fail</td></tr>
+      <tr><td>Directory Listing</td><td><code>datadir.txt</code>, <code>installdir.txt</code></td><td>PowerShell directory listings &mdash; rendered as sortable file table</td></tr>
     </table>
 
     <h3>Toolbar Controls</h3>
@@ -703,6 +839,7 @@
       <li><strong>Level Filters</strong> (All / Trace / Debug / Info / Warn / Error) &mdash; Show only log lines at the selected severity level. Error filter also includes PowerShell error blocks.</li>
       <li><strong>Redact</strong> &mdash; Toggle sensitive data masking (on by default). Redacts CustomerIDs, AgentIDs, IPs, MAC addresses, serial numbers, HMAC tokens, and UUIDs in URLs. Redaction is display-only &mdash; search still works on original values.</li>
       <li><strong>Newest First / Oldest First</strong> &mdash; Toggle sort order. Default is newest first since troubleshooting usually starts from the latest entries.</li>
+      <li><strong>Time Filter</strong> &mdash; A dual-handle slider appears below the summary banner for logs with timestamps. Drag the left and right arrow handles to narrow the visible time range. The timestamps update live as you drag. Click &times; to reset to the full range. Works alongside level and search filters.</li>
       <li><strong>Select</strong> &mdash; Enter line selection mode. Checkboxes appear next to each log line. Pick individual lines, then use <strong>Export Selected</strong> to download a plain-text file with host details and each selected line separated by divider lines. The button changes to <strong>Cancel</strong> to exit selection mode. Use <strong>Select All</strong> / <strong>Deselect All</strong> for bulk operations. Exported files are named <code>hostname_logname_YYYYMMDDHHMMSS.txt</code>.</li>
     </ul>
 
@@ -821,6 +958,7 @@ const redactBtn = $('redactBtn'), sortBtn = $('sortBtn');
 
 let allTabs = [], currentTabIdx = 0, currentFilter = 'all', currentSearch = '';
 let redactEnabled = true, newestFirst = true;
+let timeFilterFrom = null, timeFilterTo = null;
 const RENDER_CHUNK = 5000;
 
 // Sensitive data patterns
@@ -1369,6 +1507,49 @@ function cleanText(text) {
 
 function handleLogFile(text, filename) {
   text = cleanText(text);
+  const fnLower = (filename || '').toLowerCase();
+
+  // Special: JSON health check — pretty-print as structured data
+  if (fnLower.endsWith('.json')) {
+    try {
+      const obj = JSON.parse(text.trim());
+      allTabs.push({
+        id: allTabs.length, label: filename, source: 'json', logType: 'json',
+        lines: [], jsonData: obj,
+        meta: { filename, firstTime: '', lastTime: '', lineCount: 1, pids: [] },
+        hasErrors: false, warnCount: 0, errCount: 0,
+      });
+      typeBadge.textContent = 'JSON'; typeBadge.className = 'log-type-badge json'; typeBadge.style.display = '';
+      return;
+    } catch {}
+  }
+
+  // Special: directory listings (datadir.txt, installdir.txt) — render as table
+  if (/^(datadir|installdir)\.txt$/i.test(fnLower)) {
+    const dirLines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n').filter(l => l.trim());
+    allTabs.push({
+      id: allTabs.length, label: filename, source: 'dirlist', logType: 'dirlist',
+      lines: [], dirLines,
+      meta: { filename, firstTime: '', lastTime: '', lineCount: dirLines.length, pids: [] },
+      hasErrors: false, warnCount: 0, errCount: 0,
+    });
+    typeBadge.textContent = 'Directory'; typeBadge.className = 'log-type-badge dirlist'; typeBadge.style.display = '';
+    return;
+  }
+
+  // Special: health check TXT — structured report
+  if (/health_check.*\.txt$/i.test(fnLower)) {
+    const hcLines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+    allTabs.push({
+      id: allTabs.length, label: filename, source: 'healthcheck', logType: 'healthcheck',
+      lines: [], hcLines,
+      meta: { filename, firstTime: '', lastTime: '', lineCount: hcLines.length, pids: [] },
+      hasErrors: false, warnCount: 0, errCount: 0,
+    });
+    typeBadge.textContent = 'Health Check'; typeBadge.className = 'log-type-badge healthcheck'; typeBadge.style.display = '';
+    return;
+  }
+
   const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
   const parsed = parseLogLines(lines);
   const logType = detectLogType(parsed, filename);
@@ -1477,26 +1658,77 @@ function detectLogType(lines, filename) {
 const LOG_RE = /^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d+)\s+([+-]\d{4})\s+\[([^\]]*)\]\[(\d+)\]:\[(\w+)\]:(?:\[(\d+)\]:)?(.*)$/;
 // Go logrus format: time="2026-03-23T15:42:30Z" level=info msg="..."
 const LOGRUS_RE = /^time="(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z?)"\s+level=(\w+)\s+msg="((?:[^"\\]|\\.)*)"\s*(.*)/;
+// Windows cloud agent: MM/DD/YYYY H:MM:SS.ffff [PID]"ThreadID": Level: Component: Message
+const WIN_AGENT_RE = /^(\d{1,2}\/\d{1,2}\/\d{4}\s+\d{1,2}:\d{2}:\d{2}\.\d+)\s+\[([^\]]+)\]"([^"]*)":\s*(\w+):\s*(\w+):\s*(.*)/;
+// Windows .NET style: MM/DD/YYYY HH:MM:SS AM/PM - message
+const WIN_DATETIME_RE = /^(\d{1,2}\/\d{1,2}\/\d{4}\s+\d{1,2}:\d{2}:\d{2}\s*(?:AM|PM)?)\s*[-:]\s*(.*)/i;
+// Bare ISO: YYYY-MM-DD HH:MM:SS message (no brackets/tz)
+const ISO_BARE_RE = /^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+(?!\S+\s+\[)(.+)$/;
+// Bracketed: [YYYY-MM-DD HH:MM:SS] [LEVEL] message
+const WIN_BRACKET_RE = /^\[(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\]\s*\[(\w+)\]\s*(.*)/;
+// CloudAgentInstaller: [MM/DD/YYYY HH:MM:SS.fff]: Level: message
+const INSTALLER_RE = /^\[(\d{1,2}\/\d{1,2}\/\d{4}\s+\d{1,2}:\d{2}:\d{2}\.\d+)\]:\s*(\w+):\s*(.*)/;
+// Sync.log: YYYY-MM-DDTHH:MM:SS.fffffffZ PID LEVEL source:line message
+const SYNC_RE = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z?)\s+(\d+)\s+([A-Z])\s+(\S+:\d+)\s+(.*)/;
+// MSI verbose: MSI (c) (XX:YY) [HH:MM:SS:fff]: message
+const MSI_RE = /^MSI\s+\([cse]\)\s+\(([^)]+)\)\s+\[(\d{2}:\d{2}:\d{2}:\d{3})\]:\s*(.*)/;
 const PS_AT_RE = /^At\s+\S+:\d+\s+char:\d+/;
 const PS_PLUS_RE = /^\+\s+/;
 const PS_CAT_RE = /^\s*\+\s*CategoryInfo/;
 const PS_FQID_RE = /^\s*\+\s*FullyQualifiedErrorId/;
 const PS_ERR_RE = /^(\S[\w\-\.]+)\s*:\s*(.+)/;
 
+function normalizeWinTs(ts) {
+  // Convert MM/DD/YYYY HH:MM:SS AM/PM → YYYY-MM-DD HH:MM:SS
+  const parts = ts.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2}):(\d{2})\s*(AM|PM)?$/i);
+  if (!parts) return ts;
+  let [, mo, day, yr, hr, mn, sc, ampm] = parts;
+  if (ampm) {
+    hr = parseInt(hr, 10);
+    if (ampm.toUpperCase() === 'PM' && hr < 12) hr += 12;
+    if (ampm.toUpperCase() === 'AM' && hr === 12) hr = 0;
+  }
+  return `${yr}-${String(mo).padStart(2,'0')}-${String(day).padStart(2,'0')} ${String(hr).padStart(2,'0')}:${mn}:${sc}`;
+}
+
 function parseLogLines(lines) {
   const result = [];
-  let structuredCount = 0, logrusCount = 0;
+  let structuredCount = 0, logrusCount = 0, winAgentCount = 0, winDtCount = 0, isoBareCount = 0, winBracketCount = 0;
+  let installerCount = 0, syncCount = 0, msiCount = 0;
   const sampleSize = Math.min(lines.length, 100);
   for (let i = 0; i < sampleSize; i++) {
-    const t = lines[i]?.trim() || '';
+    const t = lines[i]?.replace(/^\uFFFD+/, '').trim() || '';
     if (LOG_RE.test(t)) structuredCount++;
-    if (LOGRUS_RE.test(t)) logrusCount++;
+    else if (LOGRUS_RE.test(t)) logrusCount++;
+    else if (WIN_AGENT_RE.test(t)) winAgentCount++;
+    else if (INSTALLER_RE.test(t)) installerCount++;
+    else if (SYNC_RE.test(t)) syncCount++;
+    else if (MSI_RE.test(t)) msiCount++;
+    else if (WIN_DATETIME_RE.test(t)) winDtCount++;
+    else if (WIN_BRACKET_RE.test(t)) winBracketCount++;
+    else if (ISO_BARE_RE.test(t)) isoBareCount++;
   }
   const isStructured = structuredCount > sampleSize * 0.2;
   const isLogrus = logrusCount > sampleSize * 0.2;
+  const isWinAgent = winAgentCount > sampleSize * 0.2;
+  const isInstaller = installerCount > sampleSize * 0.2;
+  const isSync = syncCount > sampleSize * 0.2;
+  const isMsi = msiCount > sampleSize * 0.1; // MSI logs have mixed lines, lower threshold
+  const isWinDt = winDtCount > sampleSize * 0.2;
+  const isWinBracket = winBracketCount > sampleSize * 0.2;
+  const isIsoBare = isoBareCount > sampleSize * 0.2;
+
+  // MSI logs: extract date from header line "=== Verbose logging started: M/DD/YYYY  HH:MM:SS ..."
+  let msiDate = '';
+  if (isMsi) {
+    for (let i = 0; i < Math.min(lines.length, 5); i++) {
+      const dm = lines[i]?.match(/logging started:\s*(\d{1,2}\/\d{1,2}\/\d{4})/);
+      if (dm) { msiDate = dm[1]; break; }
+    }
+  }
 
   for (let i = 0; i < lines.length; i++) {
-    const trimmed = lines[i].trim();
+    const trimmed = lines[i].replace(/^\uFFFD+/, '').trim();
     if (!trimmed) continue;
 
     const m = trimmed.match(LOG_RE);
@@ -1504,8 +1736,9 @@ function parseLogLines(lines) {
       const entry = {
         timestamp: m[1], tz: m[2], process: m[3], pid: m[4], level: m[5],
         threadId: m[6] || '', message: m[7], raw: trimmed,
-        isParsed: true, lineType: 'structured', jsonPayload: null, originalLineNum: i + 1,
+        isParsed: true, lineType: 'structured', jsonPayload: null, originalLineNum: i + 1, tsMs: 0,
       };
+      entry.tsMs = parseTs(entry.timestamp);
       const mt = entry.message.trim();
       if (mt.startsWith('{') && mt.endsWith('}')) {
         try { entry.jsonPayload = JSON.parse(mt); entry.lineType = 'json-payload'; } catch {}
@@ -1517,14 +1750,131 @@ function parseLogLines(lines) {
     // Go logrus format (agentid.log)
     const lr = trimmed.match(LOGRUS_RE);
     if (lr) {
-      const lvl = lr[2].charAt(0).toUpperCase() + lr[2].slice(1); // info -> Info -> Information mapping
+      const lvl = lr[2].charAt(0).toUpperCase() + lr[2].slice(1);
       const levelMap = { 'Info': 'Information', 'Warning': 'Warning', 'Warn': 'Warning', 'Error': 'Error', 'Debug': 'Debug', 'Trace': 'Trace', 'Fatal': 'Error', 'Panic': 'Error' };
       const extra = lr[4] ? ' ' + lr[4] : '';
-      result.push({
-        timestamp: lr[1].replace('T', ' ').replace('Z', ''), tz: '+0000', process: 'agentid', pid: '',
+      const ts = lr[1].replace('T', ' ').replace('Z', '');
+      const entry = {
+        timestamp: ts, tz: '+0000', process: 'agentid', pid: '',
         level: levelMap[lvl] || lvl, threadId: '', message: lr[3] + extra, raw: trimmed,
-        isParsed: true, lineType: 'structured', jsonPayload: null, originalLineNum: i + 1,
-      });
+        isParsed: true, lineType: 'structured', jsonPayload: null, originalLineNum: i + 1, tsMs: 0,
+      };
+      entry.tsMs = parseTs(entry.timestamp);
+      result.push(entry);
+      continue;
+    }
+
+    // Windows cloud agent format: MM/DD/YYYY H:MM:SS.ffff [PID]"ThreadID": Level: Component: Message
+    const wa = trimmed.match(WIN_AGENT_RE);
+    if (wa) {
+      const ts = normalizeWinTs(wa[1].replace(/\.\d+$/, '')); // strip fractional seconds for normalizer
+      const levelMap3 = { 'Information': 'Information', 'Warning': 'Warning', 'Error': 'Error', 'Debug': 'Debug', 'Trace': 'Trace' };
+      const entry = {
+        timestamp: ts, tz: '', process: wa[5], pid: wa[2],
+        level: levelMap3[wa[4]] || wa[4], threadId: wa[3], message: wa[5] + ': ' + wa[6], raw: trimmed,
+        isParsed: true, lineType: 'structured', jsonPayload: null, originalLineNum: i + 1, tsMs: 0,
+      };
+      entry.tsMs = parseTs(entry.timestamp);
+      result.push(entry);
+      continue;
+    }
+
+    // CloudAgentInstaller: [MM/DD/YYYY HH:MM:SS.fff]: Level: message
+    const ci = trimmed.match(INSTALLER_RE);
+    if (ci) {
+      const ts = normalizeWinTs(ci[1].replace(/\.\d+$/, ''));
+      const levelMap4 = { 'Info': 'Information', 'Warning': 'Warning', 'Error': 'Error', 'Debug': 'Debug', 'Verbose': 'Trace' };
+      const entry = {
+        timestamp: ts, tz: '', process: 'installer', pid: '',
+        level: levelMap4[ci[2]] || ci[2], threadId: '', message: ci[3], raw: trimmed,
+        isParsed: true, lineType: 'structured', jsonPayload: null, originalLineNum: i + 1, tsMs: 0,
+      };
+      entry.tsMs = parseTs(entry.timestamp);
+      result.push(entry);
+      continue;
+    }
+
+    // Sync.log: YYYY-MM-DDTHH:MM:SS.fffffffZ PID LEVEL source:line message
+    const sy = trimmed.match(SYNC_RE);
+    if (sy) {
+      const ts = sy[1].replace('T', ' ').replace(/\.\d+Z?$/, '').replace('Z', '');
+      const syncLevelMap = { 'I': 'Information', 'W': 'Warning', 'E': 'Error', 'D': 'Debug', 'V': 'Trace', 'S': 'Trace' };
+      const entry = {
+        timestamp: ts, tz: '+0000', process: sy[4], pid: sy[2],
+        level: syncLevelMap[sy[3]] || 'Information', threadId: '', message: sy[5], raw: trimmed,
+        isParsed: true, lineType: 'structured', jsonPayload: null, originalLineNum: i + 1, tsMs: 0,
+      };
+      entry.tsMs = parseTs(entry.timestamp);
+      result.push(entry);
+      continue;
+    }
+
+    // MSI verbose: MSI (c) (XX:YY) [HH:MM:SS:fff]: message
+    const mi = trimmed.match(MSI_RE);
+    if (mi) {
+      const timeStr = mi[2].replace(/:(\d{3})$/, '.$1'); // HH:MM:SS:fff → HH:MM:SS.fff
+      const ts = msiDate ? normalizeWinTs(msiDate + ' ' + timeStr.replace(/\.\d+$/, '')) : '';
+      const entry = {
+        timestamp: ts, tz: '', process: 'msi', pid: mi[1],
+        level: 'Information', threadId: '', message: mi[3], raw: trimmed,
+        isParsed: true, lineType: 'structured', jsonPayload: null, originalLineNum: i + 1, tsMs: 0,
+      };
+      if (ts) entry.tsMs = parseTs(entry.timestamp);
+      const msg = mi[3].toLowerCase();
+      if (msg.includes('error') || msg.includes('failed')) entry.level = 'Error';
+      else if (msg.includes('warning')) entry.level = 'Warning';
+      else if (msg.includes('debug')) entry.level = 'Debug';
+      result.push(entry);
+      continue;
+    }
+
+    // Windows .NET datetime format (communicationlog, dmmlog, etc.)
+    const wd = trimmed.match(WIN_DATETIME_RE);
+    if (wd) {
+      const ts = normalizeWinTs(wd[1]);
+      const entry = {
+        timestamp: ts, tz: '', process: '', pid: '',
+        level: 'Information', threadId: '', message: wd[2], raw: trimmed,
+        isParsed: true, lineType: 'structured', jsonPayload: null, originalLineNum: i + 1, tsMs: 0,
+      };
+      entry.tsMs = parseTs(entry.timestamp);
+      // Try to detect level from message content
+      const msg = wd[2].toLowerCase();
+      if (msg.includes('error') || msg.includes('fail') || msg.includes('exception')) entry.level = 'Error';
+      else if (msg.includes('warn')) entry.level = 'Warning';
+      else if (msg.includes('debug')) entry.level = 'Debug';
+      result.push(entry);
+      continue;
+    }
+
+    // Bracketed timestamp format: [YYYY-MM-DD HH:MM:SS] [LEVEL] message
+    const wb = trimmed.match(WIN_BRACKET_RE);
+    if (wb) {
+      const levelMap2 = { 'INFO': 'Information', 'WARN': 'Warning', 'WARNING': 'Warning', 'ERROR': 'Error', 'DEBUG': 'Debug', 'TRACE': 'Trace', 'FATAL': 'Error' };
+      const entry = {
+        timestamp: wb[1], tz: '', process: '', pid: '',
+        level: levelMap2[wb[2].toUpperCase()] || wb[2], threadId: '', message: wb[3], raw: trimmed,
+        isParsed: true, lineType: 'structured', jsonPayload: null, originalLineNum: i + 1, tsMs: 0,
+      };
+      entry.tsMs = parseTs(entry.timestamp);
+      result.push(entry);
+      continue;
+    }
+
+    // Bare ISO timestamp: YYYY-MM-DD HH:MM:SS message
+    const ib = trimmed.match(ISO_BARE_RE);
+    if (ib && (isIsoBare || !isStructured)) {
+      const entry = {
+        timestamp: ib[1], tz: '', process: '', pid: '',
+        level: 'Information', threadId: '', message: ib[2], raw: trimmed,
+        isParsed: true, lineType: 'structured', jsonPayload: null, originalLineNum: i + 1, tsMs: 0,
+      };
+      entry.tsMs = parseTs(entry.timestamp);
+      const msg = ib[2].toLowerCase();
+      if (msg.includes('error') || msg.includes('fail') || msg.includes('exception')) entry.level = 'Error';
+      else if (msg.includes('warn')) entry.level = 'Warning';
+      else if (msg.includes('debug')) entry.level = 'Debug';
+      result.push(entry);
       continue;
     }
 
@@ -1535,28 +1885,28 @@ function parseLogLines(lines) {
 
     // Banner
     if (/^(===|Host:|File:|Size:|Modified:|Showing:)/.test(trimmed)) {
-      result.push({ raw: trimmed, isParsed: false, isBanner: true, level: '', message: trimmed, timestamp: '', lineType: 'banner', originalLineNum: i + 1 });
+      result.push({ raw: trimmed, isParsed: false, isBanner: true, level: '', message: trimmed, timestamp: '', lineType: 'banner', originalLineNum: i + 1, tsMs: 0 });
       continue;
     }
 
     // PowerShell errors
-    if (PS_AT_RE.test(trimmed)) { result.push({ raw: trimmed, isParsed: false, level: 'Error', message: trimmed, timestamp: '', lineType: 'ps-stacktrace', originalLineNum: i + 1 }); continue; }
-    if (PS_CAT_RE.test(trimmed) || PS_FQID_RE.test(trimmed)) { result.push({ raw: trimmed, isParsed: false, level: 'Error', message: trimmed, timestamp: '', lineType: 'ps-category', originalLineNum: i + 1 }); continue; }
-    if (PS_PLUS_RE.test(trimmed)) { result.push({ raw: trimmed, isParsed: false, level: 'Error', message: trimmed, timestamp: '', lineType: 'ps-pointer', originalLineNum: i + 1 }); continue; }
-    if (trimmed.includes(' : ') && /^[A-Z]/.test(trimmed) && PS_ERR_RE.test(trimmed)) { result.push({ raw: trimmed, isParsed: false, level: 'Error', message: trimmed, timestamp: '', lineType: 'ps-error', originalLineNum: i + 1 }); continue; }
-    if (/^\s+(CategoryInfo|FullyQualifiedErrorId)\s*:/.test(lines[i])) { result.push({ raw: trimmed, isParsed: false, level: 'Error', message: trimmed, timestamp: '', lineType: 'ps-category', originalLineNum: i + 1 }); continue; }
-    if (/^\s{3,}/.test(lines[i]) && result.length > 0 && result[result.length - 1].lineType?.startsWith('ps-')) { result.push({ raw: trimmed, isParsed: false, level: 'Error', message: trimmed, timestamp: '', lineType: 'ps-stacktrace', originalLineNum: i + 1 }); continue; }
+    if (PS_AT_RE.test(trimmed)) { result.push({ raw: trimmed, isParsed: false, level: 'Error', message: trimmed, timestamp: '', lineType: 'ps-stacktrace', originalLineNum: i + 1, tsMs: 0 }); continue; }
+    if (PS_CAT_RE.test(trimmed) || PS_FQID_RE.test(trimmed)) { result.push({ raw: trimmed, isParsed: false, level: 'Error', message: trimmed, timestamp: '', lineType: 'ps-category', originalLineNum: i + 1, tsMs: 0 }); continue; }
+    if (PS_PLUS_RE.test(trimmed)) { result.push({ raw: trimmed, isParsed: false, level: 'Error', message: trimmed, timestamp: '', lineType: 'ps-pointer', originalLineNum: i + 1, tsMs: 0 }); continue; }
+    if (trimmed.includes(' : ') && /^[A-Z]/.test(trimmed) && PS_ERR_RE.test(trimmed)) { result.push({ raw: trimmed, isParsed: false, level: 'Error', message: trimmed, timestamp: '', lineType: 'ps-error', originalLineNum: i + 1, tsMs: 0 }); continue; }
+    if (/^\s+(CategoryInfo|FullyQualifiedErrorId)\s*:/.test(lines[i])) { result.push({ raw: trimmed, isParsed: false, level: 'Error', message: trimmed, timestamp: '', lineType: 'ps-category', originalLineNum: i + 1, tsMs: 0 }); continue; }
+    if (/^\s{3,}/.test(lines[i]) && result.length > 0 && result[result.length - 1].lineType?.startsWith('ps-')) { result.push({ raw: trimmed, isParsed: false, level: 'Error', message: trimmed, timestamp: '', lineType: 'ps-stacktrace', originalLineNum: i + 1, tsMs: 0 }); continue; }
 
     // Continuation for structured logs
-    if (isStructured && result.length > 0 && result[result.length - 1].isParsed) {
+    if ((isStructured || isWinAgent || isInstaller || isSync || isMsi || isWinDt || isWinBracket || isIsoBare) && result.length > 0 && result[result.length - 1].isParsed) {
       result[result.length - 1].message += '\n' + trimmed;
       result[result.length - 1].raw += '\n' + trimmed;
       continue;
     }
 
-    result.push({ raw: trimmed, isParsed: false, level: '', message: trimmed, timestamp: '', lineType: 'raw', originalLineNum: i + 1 });
+    result.push({ raw: trimmed, isParsed: false, level: '', message: trimmed, timestamp: '', lineType: 'raw', originalLineNum: i + 1, tsMs: 0 });
   }
-  result.logType = isStructured ? 'structured' : 'raw';
+  result.logType = (isStructured || isLogrus || isWinAgent || isInstaller || isSync || isMsi || isWinDt || isWinBracket || isIsoBare) ? 'structured' : 'raw';
   return result;
 }
 
@@ -1572,7 +1922,7 @@ function groupLines(lines, logType) {
 }
 
 function mkGrp(line, label) {
-  const ts = line.isParsed && line.timestamp ? parseTs(line.timestamp) : null;
+  const ts = line.tsMs || null;
   return { type: 'events', lines: [], startTime: line.timestamp || null, lastTs: ts, firstTs: ts, label, durationLabel: '' };
 }
 
@@ -1597,12 +1947,11 @@ function finalizeGroups(groups) {
 
 function addToGroup(current, line, groups, gapMs) {
   if (!current || current.type !== 'events') { current = mkGrp(line, ''); groups.push(current); }
-  else if (line.isParsed && line.timestamp && current.lastTs) {
-    const ts = parseTs(line.timestamp);
-    if (ts - current.lastTs > gapMs) { current = mkGrp(line, ''); groups.push(current); }
+  else if (line.tsMs && current.lastTs) {
+    if (line.tsMs - current.lastTs > gapMs) { current = mkGrp(line, ''); groups.push(current); }
   }
   current.lines.push(line);
-  if (line.isParsed && line.timestamp) current.lastTs = parseTs(line.timestamp);
+  if (line.tsMs) current.lastTs = line.tsMs;
   return current;
 }
 
@@ -1741,8 +2090,20 @@ function showTab(idx) {
     typeBadge.className = 'log-type-badge ' + (tab.source === 'csv' ? 'csv' : tab.logType);
     typeBadge.style.display = '';
   }
+  // Special source types get their own renderers
+  if (tab.source === 'json' || tab.source === 'dirlist' || tab.source === 'healthcheck') {
+    bannerContainer.innerHTML = `<div class="summary-banner"><div class="field"><span class="label">File:</span><span class="value">${esc(tab.meta.filename)}</span></div><div class="field"><span class="label">Type:</span><span class="value">${tab.source === 'json' ? 'Health Check JSON' : tab.source === 'dirlist' ? 'Directory Listing' : 'Health Check Report'}</span></div></div>`;
+    toolbar.style.display = 'none';
+    statsEl.textContent = '';
+    if (tab.source === 'json') renderJSON(tab);
+    else if (tab.source === 'dirlist') renderDirList(tab);
+    else renderHealthCheck(tab);
+    return;
+  }
   tab.source === 'csv' ? renderCSVBanner(tab) : renderLogBanner(tab);
   currentFilter = 'all'; currentSearch = ''; searchBox.value = '';
+  timeFilterFrom = null; timeFilterTo = null;
+  initTimeSlider();
   document.querySelectorAll('.filter-btn').forEach(b => b.classList.toggle('active', b.dataset.level === 'all'));
   toolbar.style.display = 'flex';
   renderLog();
@@ -1787,6 +2148,23 @@ function renderLogBanner(tab) {
   html += '<div class="summary-banner">' + fields.filter(([, v]) => v)
     .map(([l, v, c]) => `<div class="field"><span class="label">${l}:</span><span class="value ${c}">${esc(v)}</span></div>`).join('') + '</div>';
 
+  // Time filter row (only for logs with timestamps)
+  if (m.firstTime && m.lastTime) {
+    const minMs = parseTs(m.firstTime), maxMs = parseTs(m.lastTime);
+    html += `<div class="time-filter-row" id="timeFilterRow" data-min="${minMs}" data-max="${maxMs}">
+      <span class="tf-label">Time Filter:</span>
+      <span class="tf-time" id="tfFromLabel">${m.firstTime}</span>
+      <div class="range-slider" id="timeRangeSlider">
+        <div class="rs-track"></div>
+        <div class="rs-fill" id="rsFill"></div>
+        <div class="rs-handle" id="rsHandleFrom" data-which="from"></div>
+        <div class="rs-handle" id="rsHandleTo" data-which="to"></div>
+      </div>
+      <span class="tf-time" id="tfToLabel">${m.lastTime}</span>
+      <button class="tf-clear" onclick="clearTimeFilter()" title="Reset time filter">&times;</button>
+    </div>`;
+  }
+
   bannerContainer.innerHTML = html;
 }
 
@@ -1800,6 +2178,113 @@ window.toggleLineSelect = function(el) {
   if (isChecked) selectedLines.add(ln); else selectedLines.delete(ln);
   updateExportCount();
 };
+
+// ===== Special renderers for non-log files =====
+function renderJSON(tab) {
+  const obj = tab.jsonData;
+  function renderVal(val, depth) {
+    if (val === null) return '<span class="jv-null">null</span>';
+    if (typeof val === 'boolean') return `<span class="jv-bool">${val}</span>`;
+    if (typeof val === 'number') return `<span class="jv-num">${val}</span>`;
+    if (typeof val === 'string') return `<span class="jv-str">"${esc(val)}"</span>`;
+    if (Array.isArray(val)) {
+      if (val.length === 0) return '<span class="jv-bracket">[]</span>';
+      if (val.every(v => typeof v !== 'object' || v === null) && val.length <= 5) {
+        return '<span class="jv-bracket">[</span> ' + val.map(v => renderVal(v, depth + 1)).join(', ') + ' <span class="jv-bracket">]</span>';
+      }
+      return '<span class="jv-bracket">[</span><div class="jv-indent">' + val.map(v => renderVal(v, depth + 1)).join(',<br>') + '</div><span class="jv-bracket">]</span>';
+    }
+    if (typeof val === 'object') {
+      const entries = Object.entries(val);
+      if (entries.length === 0) return '<span class="jv-bracket">{}</span>';
+      return '<span class="jv-bracket">{</span><div class="jv-indent">' +
+        entries.map(([k, v]) => {
+          const isStatus = /health|status|result/i.test(k);
+          const statusCls = isStatus ? (String(v).match(/good|pass|true|success/i) ? ' jv-good' : String(v).match(/bad|fail|false|error|critical/i) ? ' jv-bad' : '') : '';
+          return `<span class="jv-key">"${esc(k)}"</span>: <span class="${statusCls}">${renderVal(v, depth + 1)}</span>`;
+        }).join(',<br>') +
+        '</div><span class="jv-bracket">}</span>';
+    }
+    return esc(String(val));
+  }
+  logContainer.innerHTML = `<div class="json-viewer">${renderVal(obj, 0)}</div>`;
+}
+
+function renderDirList(tab) {
+  const lines = tab.dirLines.map(l => l.replace(/^\uFFFD+/, '').trim()).filter(Boolean);
+  let html = '<div class="dir-table-wrap"><table class="dir-table"><thead><tr>';
+  // Find header line (has "Mode" and "FullName")
+  let headerIdx = -1;
+  for (let i = 0; i < Math.min(lines.length, 5); i++) {
+    if (/Mode\s+FullName/.test(lines[i])) { headerIdx = i; break; }
+  }
+  if (headerIdx === -1) {
+    logContainer.innerHTML = '<div class="json-viewer"><pre>' + lines.map(l => esc(l)).join('\n') + '</pre></div>';
+    return;
+  }
+  const headers = ['Mode', 'Name', 'Last Modified', 'Size', 'Version', 'Hash'];
+  html += headers.map(h => `<th>${h}</th>`).join('') + '</tr></thead><tbody>';
+  for (let i = headerIdx + 2; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line || /^-+$/.test(line)) continue;
+    // PowerShell columnar: Mode  Path  Date  Size  Version  Hash (variable spacing, optional trailing fields)
+    const m = line.match(/^(\S+)\s+((?:[A-Za-z]:\\|\/).+?)\s{2,}(\d{1,2}\/\d{1,2}\/\d{4}\s+\d{1,2}:\d{2}:\d{2}\s*(?:AM|PM)?)\s*([\d]*)\s*([\d.]*)\s*([\dA-Fa-f]*)/i);
+    if (m) {
+      const name = m[2].replace(/\\/g, '/').split('/').pop();
+      const isDir = m[1].startsWith('d');
+      const sizeNum = parseInt(m[4]);
+      const size = m[4] ? (sizeNum > 1048576 ? (sizeNum / 1048576).toFixed(1) + ' MB' : sizeNum > 1024 ? (sizeNum / 1024).toFixed(1) + ' KB' : sizeNum + ' B') : '';
+      const ver = m[5] || '';
+      const hash = m[6] || '';
+      html += `<tr><td>${esc(m[1])}</td><td class="${isDir ? 'dir-folder' : 'dir-file'}">${isDir ? '&#128193; ' : '&#128196; '}${esc(name)}</td><td>${esc(m[3].trim())}</td><td class="dir-size">${size}</td><td>${esc(ver)}</td><td class="dir-hash" title="${esc(hash)}">${hash ? esc(hash.substring(0, 16)) + '...' : ''}</td></tr>`;
+    }
+  }
+  html += '</tbody></table></div>';
+  logContainer.innerHTML = html;
+}
+
+function renderHealthCheck(tab) {
+  const lines = tab.hcLines;
+  let html = '<div class="hc-report">';
+  let inSection = false;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (/^\*{5,}$/.test(trimmed)) {
+      if (inSection) html += '</div>';
+      inSection = false;
+      continue;
+    }
+    // Section headers (line after ****)
+    if (!inSection && !/^(CoreHealthCheck|ScanHealthCheck|PatchHealthCheck|EDRHealthCheck|\s)/.test(trimmed) && /^[A-Z]/.test(trimmed)) {
+      html += `<div class="hc-section"><h3 class="hc-section-title">${esc(trimmed)}</h3>`;
+      inSection = true;
+      continue;
+    }
+    // Health check items: "CoreHealthCheck N : description"
+    const checkMatch = trimmed.match(/^(\w+HealthCheck)\s+(\d+)\s*:\s*(.*)/);
+    if (checkMatch) {
+      html += `<div class="hc-item"><span class="hc-num">${esc(checkMatch[1])} ${checkMatch[2]}</span><span class="hc-desc">${esc(checkMatch[3])}</span></div>`;
+      continue;
+    }
+    // Result lines: "Result : Pass" or key:value pairs
+    const kvMatch = trimmed.match(/^([^:]+?)\s*:\s*(.*)/);
+    if (kvMatch) {
+      const val = kvMatch[2].trim();
+      let cls = '';
+      if (/^(Pass|Good|Success|True|Running|Healthy)$/i.test(val)) cls = 'hc-pass';
+      else if (/^(Fail|Bad|Error|False|Stopped|Critical|Unhealthy)$/i.test(val)) cls = 'hc-fail';
+      else if (/^(Warning|Degraded)$/i.test(val)) cls = 'hc-warn';
+      html += `<div class="hc-kv"><span class="hc-key">${esc(kvMatch[1].trim())}</span><span class="hc-val ${cls}">${esc(val)}</span></div>`;
+      continue;
+    }
+    // Plain text
+    html += `<div class="hc-line">${esc(trimmed)}</div>`;
+  }
+  if (inSection) html += '</div>';
+  html += '</div>';
+  logContainer.innerHTML = html;
+}
 
 function renderLog() {
   const tab = allTabs[currentTabIdx]; if (!tab) return;
@@ -1820,6 +2305,15 @@ function renderLog() {
       if (l.lineType === 'banner') return true;
       if (currentFilter === 'Error') return l.level === 'Error' || l.lineType?.startsWith('ps-');
       return l.level === currentFilter;
+    });
+  }
+  if (timeFilterFrom !== null || timeFilterTo !== null) {
+    lines = lines.filter(l => {
+      if (l.lineType === 'banner') return true;
+      if (!l.tsMs) return false;
+      if (timeFilterFrom !== null && l.tsMs < timeFilterFrom) return false;
+      if (timeFilterTo !== null && l.tsMs > timeFilterTo) return false;
+      return true;
     });
   }
   const search = currentSearch.toLowerCase();
@@ -1982,6 +2476,129 @@ document.querySelectorAll('.filter-btn').forEach(btn => {
   });
 });
 
+// Time filter — dual range slider
+let _sliderState = { minMs: 0, maxMs: 0, fromPct: 0, toPct: 100, debounceTimer: null };
+
+function formatTsLabel(ms) {
+  const d = new Date(ms);
+  const pad = (n, w) => String(n).padStart(w, '0');
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1,2)}-${pad(d.getUTCDate(),2)} ${pad(d.getUTCHours(),2)}:${pad(d.getUTCMinutes(),2)}:${pad(d.getUTCSeconds(),2)}`;
+}
+
+function updateSliderUI() {
+  const fill = document.getElementById('rsFill');
+  const hFrom = document.getElementById('rsHandleFrom');
+  const hTo = document.getElementById('rsHandleTo');
+  const lFrom = document.getElementById('tfFromLabel');
+  const lTo = document.getElementById('tfToLabel');
+  if (!fill || !hFrom || !hTo) return;
+  fill.style.left = _sliderState.fromPct + '%';
+  fill.style.width = (_sliderState.toPct - _sliderState.fromPct) + '%';
+  hFrom.style.left = _sliderState.fromPct + '%';
+  hTo.style.left = _sliderState.toPct + '%';
+  const range = _sliderState.maxMs - _sliderState.minMs;
+  const fromMs = _sliderState.minMs + (range * _sliderState.fromPct / 100);
+  const toMs = _sliderState.minMs + (range * _sliderState.toPct / 100);
+  if (lFrom) lFrom.textContent = formatTsLabel(fromMs);
+  if (lTo) lTo.textContent = formatTsLabel(toMs);
+}
+
+function applySliderFilter() {
+  const range = _sliderState.maxMs - _sliderState.minMs;
+  const isFullRange = _sliderState.fromPct <= 0.5 && _sliderState.toPct >= 99.5;
+  if (isFullRange) {
+    timeFilterFrom = null;
+    timeFilterTo = null;
+  } else {
+    timeFilterFrom = _sliderState.minMs + (range * _sliderState.fromPct / 100);
+    timeFilterTo = _sliderState.minMs + (range * _sliderState.toPct / 100);
+  }
+  renderLog();
+}
+
+function initTimeSlider() {
+  const row = document.getElementById('timeFilterRow');
+  if (!row) return;
+  _sliderState.minMs = parseInt(row.dataset.min) || 0;
+  _sliderState.maxMs = parseInt(row.dataset.max) || 0;
+  _sliderState.fromPct = 0;
+  _sliderState.toPct = 100;
+  updateSliderUI();
+
+  const slider = document.getElementById('timeRangeSlider');
+  if (!slider) return;
+
+  function pctFromEvent(e) {
+    const rect = slider.getBoundingClientRect();
+    return Math.max(0, Math.min(100, ((e.clientX - rect.left) / rect.width) * 100));
+  }
+
+  let dragging = null;
+  function onDown(e) {
+    e.preventDefault();
+    const handle = e.target.closest('.rs-handle');
+    if (!handle) return;
+    dragging = handle.dataset.which;
+    handle.classList.add('dragging');
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    document.addEventListener('touchmove', onMove, { passive: false });
+    document.addEventListener('touchend', onUp);
+  }
+  function onMove(e) {
+    if (!dragging) return;
+    e.preventDefault();
+    const ev = e.touches ? e.touches[0] : e;
+    const pct = pctFromEvent(ev);
+    if (dragging === 'from') {
+      _sliderState.fromPct = Math.min(pct, _sliderState.toPct - 0.5);
+    } else {
+      _sliderState.toPct = Math.max(pct, _sliderState.fromPct + 0.5);
+    }
+    updateSliderUI();
+    clearTimeout(_sliderState.debounceTimer);
+    _sliderState.debounceTimer = setTimeout(applySliderFilter, 200);
+  }
+  function onUp() {
+    if (!dragging) return;
+    const handle = document.getElementById(dragging === 'from' ? 'rsHandleFrom' : 'rsHandleTo');
+    if (handle) handle.classList.remove('dragging');
+    dragging = null;
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    document.removeEventListener('touchmove', onMove);
+    document.removeEventListener('touchend', onUp);
+    applySliderFilter();
+  }
+
+  slider.addEventListener('mousedown', onDown);
+  slider.addEventListener('touchstart', (e) => { const t = e.touches[0]; onDown({ preventDefault: () => e.preventDefault(), target: document.elementFromPoint(t.clientX, t.clientY), clientX: t.clientX }); }, { passive: false });
+
+  // Click on track to jump handle
+  slider.addEventListener('click', (e) => {
+    if (e.target.classList.contains('rs-handle')) return;
+    const pct = pctFromEvent(e);
+    const distFrom = Math.abs(pct - _sliderState.fromPct);
+    const distTo = Math.abs(pct - _sliderState.toPct);
+    if (distFrom <= distTo) {
+      _sliderState.fromPct = Math.min(pct, _sliderState.toPct - 0.5);
+    } else {
+      _sliderState.toPct = Math.max(pct, _sliderState.fromPct + 0.5);
+    }
+    updateSliderUI();
+    applySliderFilter();
+  });
+}
+
+window.clearTimeFilter = function() {
+  timeFilterFrom = null;
+  timeFilterTo = null;
+  _sliderState.fromPct = 0;
+  _sliderState.toPct = 100;
+  updateSliderUI();
+  renderLog();
+};
+
 // Search with debounce
 let searchTimer;
 searchBox.addEventListener('input', () => {
@@ -2083,7 +2700,7 @@ exportBtn.addEventListener('click', () => {
 });
 
 // --- Version check & auto-update ---
-const APP_VERSION = '1.0.8';
+const APP_VERSION = '1.0.9';
 const REPO_URL = 'https://github.com/netsecops-76/Public-Security-Resources/tree/Qualys-Cloud-Agent-Log-Viewer';
 const VERSION_RAW_URL = 'https://raw.githubusercontent.com/netsecops-76/Public-Security-Resources/Qualys-Cloud-Agent-Log-Viewer/version.txt';
 const HTML_RAW_URL = 'https://raw.githubusercontent.com/netsecops-76/Public-Security-Resources/Qualys-Cloud-Agent-Log-Viewer/Qualys%20Cloud%20Agent%20Log%20Viewer/qualys-log-viewer.html';

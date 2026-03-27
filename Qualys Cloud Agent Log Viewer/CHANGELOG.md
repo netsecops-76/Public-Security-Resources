@@ -2,6 +2,24 @@
 
 All notable changes to the Qualys Cloud Agent Log Viewer are documented here.
 
+## [1.0.9] - 2026-03-27
+
+### Added
+- Date/time range slider filter — dual-handle slider below the summary banner for narrowing log views by time range
+- Windows cloud agent log parser (`Log.txt`) — structured timestamp, level, PID, thread, component columns
+- CloudAgentInstaller.log parser — bracket-delimited timestamp with Info/Verbose/Warning/Error levels
+- Sync.log parser — ISO 8601 nanosecond timestamps with single-char level codes (I/W/E/D/V/S)
+- MSI verbose log parser — extracts date from header, timestamps from `[HH:MM:SS:fff]` brackets
+- Health check JSON pretty-printer with syntax highlighting and green/red status indicators
+- Health check TXT structured renderer with section headers, numbered checks, and Pass/Fail color coding
+- Directory listing table renderer for datadir.txt/installdir.txt with file icons, human-readable sizes, and truncated hashes
+- Cached `tsMs` (millisecond timestamp) on every parsed line for faster filtering and grouping
+
+### Fixed
+- BOM replacement characters (`\uFFFD`) stripped from line starts — fixes first-line parsing failures on Windows UTF-16 encoded logs
+- Tab bar scroll arrows and time slider arrows now use matching warm gold color
+- Help modal link color improved for readability on dark background
+
 ## [1.0.8] - 2026-03-26
 
 ### Added

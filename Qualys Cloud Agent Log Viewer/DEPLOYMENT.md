@@ -139,7 +139,7 @@ connect-src 'self' https://cdn.jsdelivr.net https://raw.githubusercontent.com;
 
 ### File Size
 
-The HTML file is approximately 139KB (includes embedded LZMA and fflate gzip decoders for offline support) — small enough to email, embed in wikis, or distribute via any file sharing method.
+The HTML file is approximately 166KB (includes embedded LZMA and fflate gzip decoders, plus parsers for all Windows log formats) — small enough to email, embed in wikis, or distribute via any file sharing method.
 
 ## Version Check & Updating
 

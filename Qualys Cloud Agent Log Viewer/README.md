@@ -4,7 +4,7 @@ A single-file HTML tool for parsing and analyzing Qualys Cloud Agent log files a
 
 No server, no install, no build step. Just open `qualys-log-viewer.html` in any modern browser.
 
-**Current Version:** 1.0.8
+**Current Version:** 1.0.9
 
 ## Quick Start
 
@@ -46,7 +46,13 @@ CAR (Custom Assessment & Remediation) job report CSV exports are fully supported
 | **Multiplexer** | `qualys-mux.log` | Multiplexer module activity |
 | **Agent ID** | `agentid.log` | Agent identification service (Go logrus format) |
 | **CAR Reports** | `.csv` | Custom Assessment & Remediation report exports with per-asset tabs |
-| **Windows Logs** | `Log.txt`, `communicationlog.txt`, etc. | Windows agent log files from REMOTELOG bundles |
+| **Windows Agent** | `Log.txt`, `communicationlog.txt`, `commandlog.txt`, `patchlog.txt`, etc. | Windows agent logs (MM/DD/YYYY format with PID/thread) |
+| **Installer** | `CloudAgentInstaller.log` | Cloud Agent setup engine with bracketed timestamps |
+| **Sync** | `Sync.log` | Manifest synchronizer with ISO 8601 nanosecond timestamps |
+| **MSI** | `MsiLog_*.LOG` | Windows Installer verbose logs |
+| **Health Check JSON** | `*health_check*.json` | Structured health report — pretty-printed with status highlighting |
+| **Health Check TXT** | `*health_check*.txt` | Text health report — rendered as checklist with Pass/Fail |
+| **Directory Listing** | `datadir.txt`, `installdir.txt` | PowerShell directory listings — rendered as file table |
 
 ## Features
 
