@@ -2,6 +2,14 @@
 
 All notable changes to the Qualys Cloud Agent Log Viewer are documented here.
 
+## [1.0.8] - 2026-03-26
+
+### Added
+- Auto-update download — click "Update" to open a dropdown with "Download Now" or "Go to GitHub"
+- Hosting context detection — shows current file path or server URL to guide update placement
+- File System Access API support — Chrome/Edge users on local files get a save dialog to overwrite in place
+- Standard download fallback for all other browsers/environments with instructions
+
 ## [1.0.7] - 2026-03-26
 
 ### Added

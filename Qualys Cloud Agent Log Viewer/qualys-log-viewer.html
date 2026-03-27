@@ -563,6 +563,30 @@
   .version-badge.update-available a:hover { color: var(--text); }
   .version-badge.error { background: rgba(136,136,170,0.1); color: var(--text-dim); font-weight: 400; }
 
+  /* Update dropdown */
+  .header-right { position: relative; }
+  .update-dropdown {
+    display: none; position: absolute; top: 100%; right: 0; margin-top: 6px;
+    background: var(--surface2); border: 1px solid var(--border); border-radius: 8px;
+    padding: 14px 18px; min-width: 300px; z-index: 1000;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4); font-size: 12px; color: var(--text);
+  }
+  .update-dropdown.open { display: block; }
+  .update-dropdown .ud-title { font-size: 13px; font-weight: 600; color: var(--accent); margin-bottom: 10px; }
+  .update-dropdown .ud-path { font-size: 11px; color: var(--text-dim); margin-bottom: 12px; word-break: break-all; }
+  .update-dropdown .ud-path code { background: var(--surface); padding: 2px 6px; border-radius: 4px; font-size: 11px; }
+  .update-dropdown .ud-actions { display: flex; flex-direction: column; gap: 8px; }
+  .update-dropdown .ud-btn {
+    display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+    border-radius: 6px; border: 1px solid var(--border); background: var(--surface);
+    color: var(--text); cursor: pointer; font-size: 12px; text-align: left; transition: all 0.15s;
+  }
+  .update-dropdown .ud-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .update-dropdown .ud-btn .ud-icon { font-size: 16px; min-width: 20px; text-align: center; }
+  .update-dropdown .ud-btn .ud-label { font-weight: 600; }
+  .update-dropdown .ud-btn .ud-desc { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+  .update-dropdown .ud-status { font-size: 11px; color: var(--text-dim); margin-top: 10px; text-align: center; }
+
   /* Help modal */
   .help-overlay {
     position: fixed; top: 0; left: 0; right: 0; bottom: 0;
@@ -617,6 +641,21 @@
   <span class="log-type-badge unknown" id="typeBadge" style="display:none"></span>
   <div class="header-right">
     <span class="version-badge checking" id="versionBadge">Checking version...</span>
+    <div class="update-dropdown" id="updateDropdown">
+      <div class="ud-title" id="udTitle">Update Available</div>
+      <div class="ud-path" id="udPath"></div>
+      <div class="ud-actions">
+        <button class="ud-btn" id="udDownloadBtn">
+          <span class="ud-icon">&#11015;</span>
+          <div><div class="ud-label">Download Now</div><div class="ud-desc">Download the latest version and replace your current copy</div></div>
+        </button>
+        <button class="ud-btn" id="udGithubBtn">
+          <span class="ud-icon">&#8594;</span>
+          <div><div class="ud-label">Go to GitHub</div><div class="ud-desc">View the repository and download manually</div></div>
+        </button>
+      </div>
+      <div class="ud-status" id="udStatus"></div>
+    </div>
     <button class="header-btn" onclick="document.getElementById('helpOverlay').classList.add('open')">? Help</button>
   </div>
 </div>
@@ -697,8 +736,14 @@
     </ul>
     <p>Double-compressed archives (LZMA wrapping gzip, or 7z inside ZIP) are detected and handled automatically. Truncated archives (common with Linux REMOTELOG bundles that hit agent collection size limits) are handled gracefully &mdash; partial data is recovered rather than discarded.</p>
 
-    <h3 id="versionCheckHelp">Version Check</h3>
-    <p>On page load, the viewer checks for updates by fetching a version file from the <a href="https://github.com/netsecops-76/Public-Security-Resources/tree/Qualys-Cloud-Agent-Log-Viewer" target="_blank" rel="noopener">GitHub repository</a>. If a newer version is available, a yellow badge appears in the header with a link to download the update. The badge also shows how many versions behind you are (e.g., <strong>N-1</strong> = one version behind, <strong>N-3</strong> = three versions behind) so you can gauge how stale your copy is.</p>
+    <h3 id="versionCheckHelp">Version Check &amp; Auto-Update</h3>
+    <p>On page load, the viewer checks for updates by fetching a version file from the <a href="https://github.com/netsecops-76/Public-Security-Resources/tree/Qualys-Cloud-Agent-Log-Viewer" target="_blank" rel="noopener">GitHub repository</a>. If a newer version is available, a yellow badge appears in the header showing how many versions behind you are (e.g., <strong>N-1</strong> = one version behind, <strong>N-3</strong> = three versions behind).</p>
+    <p>Clicking <strong>Update</strong> opens a dropdown with two options:</p>
+    <ul>
+      <li><strong>Download Now</strong> &mdash; Fetches the latest version directly from GitHub. On Chrome/Edge with local files, a save dialog opens pre-filled with the current filename &mdash; save to the same location to overwrite, then reload the page. On other browsers, the file downloads to your Downloads folder &mdash; move it to replace your current copy.</li>
+      <li><strong>Go to GitHub</strong> &mdash; Opens the repository in a new tab to browse or download manually.</li>
+    </ul>
+    <p>The dropdown also shows where your current copy is located so you know exactly where to save the update.</p>
     <p><strong>Update check unavailable?</strong> SSL-inspecting proxies such as <strong>Zscaler</strong>, <strong>Netskope</strong>, or corporate firewalls can block outbound requests to <code>raw.githubusercontent.com</code>, preventing the version check from completing. When this happens, the badge will show <em>"Update check unavailable"</em> instead of a version status. This does not affect any viewer functionality &mdash; all log parsing and analysis works fully offline.</p>
     <p>To manually check for updates, visit the repository directly:</p>
     <p><a href="https://github.com/netsecops-76/Public-Security-Resources/tree/Qualys-Cloud-Agent-Log-Viewer" target="_blank" rel="noopener">github.com/netsecops-76/Public-Security-Resources &rarr; Qualys-Cloud-Agent-Log-Viewer branch</a></p>
@@ -2035,10 +2080,18 @@ exportBtn.addEventListener('click', () => {
   URL.revokeObjectURL(url);
 });
 
-// --- Version check against GitHub ---
-const APP_VERSION = '1.0.7';
+// --- Version check & auto-update ---
+const APP_VERSION = '1.0.8';
 const REPO_URL = 'https://github.com/netsecops-76/Public-Security-Resources/tree/Qualys-Cloud-Agent-Log-Viewer';
 const VERSION_RAW_URL = 'https://raw.githubusercontent.com/netsecops-76/Public-Security-Resources/Qualys-Cloud-Agent-Log-Viewer/version.txt';
+const HTML_RAW_URL = 'https://raw.githubusercontent.com/netsecops-76/Public-Security-Resources/Qualys-Cloud-Agent-Log-Viewer/Qualys%20Cloud%20Agent%20Log%20Viewer/qualys-log-viewer.html';
+
+const HOST_CONTEXT = (() => {
+  const p = location.protocol;
+  if (p === 'file:') return 'local';
+  if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') return 'localhost';
+  return 'server';
+})();
 
 function parseSemver(s) {
   const p = s.trim().split('.').map(Number);
@@ -2052,6 +2105,90 @@ function compareSemver(a, b) {
   return 0;
 }
 
+// Update dropdown logic
+const updateDropdown = $('updateDropdown');
+const udStatus = $('udStatus');
+let _latestVersion = '';
+
+function showUpdateDropdown(e) {
+  e.preventDefault(); e.stopPropagation();
+  // Set path info
+  const udPath = $('udPath');
+  if (HOST_CONTEXT === 'local') {
+    const fp = decodeURIComponent(location.pathname);
+    udPath.innerHTML = 'Current file: <code>' + fp + '</code>';
+  } else if (HOST_CONTEXT === 'localhost') {
+    udPath.innerHTML = 'Running on local server: <code>' + location.origin + '</code>';
+  } else {
+    udPath.innerHTML = 'Hosted at: <code>' + location.origin + '</code>';
+  }
+  $('udTitle').textContent = 'Update to v' + _latestVersion;
+  udStatus.textContent = '';
+  updateDropdown.classList.add('open');
+}
+
+// Close dropdown on outside click
+document.addEventListener('click', (e) => {
+  if (!updateDropdown.contains(e.target) && !e.target.closest('#versionBadge')) {
+    updateDropdown.classList.remove('open');
+  }
+});
+
+// Go to GitHub button
+$('udGithubBtn').addEventListener('click', () => {
+  updateDropdown.classList.remove('open');
+  window.open(REPO_URL, '_blank', 'noopener');
+});
+
+// Download update button
+$('udDownloadBtn').addEventListener('click', async () => {
+  udStatus.textContent = 'Downloading update...';
+  try {
+    const resp = await fetch(HTML_RAW_URL, { cache: 'no-store' });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const html = await resp.text();
+
+    // Try File System Access API for in-place save (Chrome/Edge on file://)
+    if (HOST_CONTEXT === 'local' && window.showSaveFilePicker) {
+      try {
+        const filename = location.pathname.split('/').pop() || 'qualys-log-viewer.html';
+        const handle = await window.showSaveFilePicker({
+          suggestedName: decodeURIComponent(filename),
+          types: [{ description: 'HTML File', accept: { 'text/html': ['.html'] } }]
+        });
+        const writable = await handle.createWritable();
+        await writable.write(html);
+        await writable.close();
+        updateDropdown.classList.remove('open');
+        const badge = $('versionBadge');
+        badge.className = 'version-badge latest';
+        badge.innerHTML = '&#10003; Updated to v' + _latestVersion + '! Reload page.';
+        return;
+      } catch (e) {
+        if (e.name === 'AbortError') { udStatus.textContent = ''; return; }
+        // Fall through to standard download
+      }
+    }
+
+    // Standard download fallback
+    const blob = new Blob([html], { type: 'text/html' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'qualys-log-viewer.html';
+    a.click();
+    URL.revokeObjectURL(url);
+    if (HOST_CONTEXT === 'local') {
+      const fp = decodeURIComponent(location.pathname);
+      udStatus.innerHTML = '&#10003; Downloaded! Move the file to:<br><code style="font-size:11px">' + fp + '</code><br>then reload this page.';
+    } else {
+      udStatus.innerHTML = '&#10003; Downloaded! Replace the file on your server, then reload.';
+    }
+  } catch (e) {
+    udStatus.textContent = 'Download failed: ' + e.message;
+  }
+});
+
 (function checkVersion() {
   const badge = $('versionBadge');
   fetch(VERSION_RAW_URL, { cache: 'no-store' })
@@ -2060,21 +2197,18 @@ function compareSemver(a, b) {
       const versions = body.split('\n').map(s => s.trim()).filter(Boolean);
       if (!versions.length) throw new Error('Empty version file');
       const latest = versions[0];
+      _latestVersion = latest;
       if (compareSemver(APP_VERSION, latest) >= 0) {
         badge.className = 'version-badge latest';
         badge.innerHTML = '&#10003; v' + APP_VERSION + ' &mdash; Latest';
       } else {
         const idx = versions.indexOf(APP_VERSION);
         let behind;
-        if (idx > 0) {
-          behind = idx;
-        } else {
-          behind = versions.filter(v => compareSemver(v, APP_VERSION) > 0).length;
-        }
+        if (idx > 0) { behind = idx; } else { behind = versions.filter(v => compareSemver(v, APP_VERSION) > 0).length; }
         const behindTag = behind > 0 ? ' (N-' + behind + ')' : '';
         badge.className = 'version-badge update-available';
         badge.innerHTML = '&#9888; v' + latest + ' Available' + behindTag +
-          ' &mdash; <a href="' + REPO_URL + '" target="_blank" rel="noopener">Update</a>';
+          ' &mdash; <a href="#" onclick="showUpdateDropdown(event)">Update</a>';
       }
     })
     .catch(() => {

@@ -4,7 +4,7 @@ A single-file HTML tool for parsing and analyzing Qualys Cloud Agent log files a
 
 No server, no install, no build step. Just open `qualys-log-viewer.html` in any modern browser.
 
-**Current Version:** 1.0.7
+**Current Version:** 1.0.8
 
 ## Quick Start
 
