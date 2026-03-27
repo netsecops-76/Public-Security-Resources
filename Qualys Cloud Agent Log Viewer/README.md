@@ -4,7 +4,7 @@ A single-file HTML tool for parsing and analyzing Qualys Cloud Agent log files a
 
 No server, no install, no build step. Just open `qualys-log-viewer.html` in any modern browser.
 
-**Current Version:** 1.0.4
+**Current Version:** 1.0.7
 
 ## Quick Start
 
@@ -71,7 +71,8 @@ When multiple log files are loaded from the same archive, all tabs inherit the h
 - **Level Filters** — Filter by All, Trace, Debug, Info, Warning, or Error
 - **Redact** — Toggle sensitive data redaction (on by default). Masks CustomerIDs, AgentIDs, IPs, MAC addresses, HMAC tokens, UUIDs in URLs, and FQDN values. Redaction applies to both the log view and the host details banner. Search still works on original values
 - **Sort Order** — Toggle between Newest First (default) and Oldest First. Qualys logs are written oldest-to-newest, but troubleshooting usually starts from the latest entries
-- **New File** — Reset and load different files. Also available in the header bar for quick access
+- **Select** — Enter line selection mode. Checkboxes appear next to each log line for picking individual entries. Use Select All / Deselect All for bulk operations. Export selected lines as a plain-text file with host header info and divider-separated entries. Files are named `hostname_logname_YYYYMMDDHHMMSS.txt`
+- **New File** — Reset and load different files (header bar)
 
 ### Smart Grouping
 
@@ -92,7 +93,8 @@ CAPI request and response payloads are detected automatically. Click the **{JSON
 ### Multi-File Tabs
 
 When loading multiple files (via multi-select, folder upload, or archive extraction):
-- Each file gets its own tab
+- Each file gets its own tab with the viewer defaulting to `qualys-cloud-agent.log` (Linux) or `Log.txt` (Windows) when available
+- Arrow buttons appear at the tab bar edges when tabs overflow the visible area
 - Tabs show badge indicators: error count (red), warning count (yellow), or OK (green)
 - Files with errors are sorted first
 

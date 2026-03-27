@@ -2,6 +2,18 @@
 
 All notable changes to the Qualys Cloud Agent Log Viewer are documented here.
 
+## [1.0.7] - 2026-03-26
+
+### Added
+- Tab bar scroll arrows — left/right navigation arrows appear when log tabs overflow the visible area
+- Default tab selection — automatically opens `qualys-cloud-agent.log` (Linux) or `log.txt` (Windows) on load
+- Line selection mode — toggle checkboxes on individual log lines to select specific entries
+- Plain-text export — export selected lines with host header info, each separated by divider lines
+- Select button toggles to "Cancel" label when in selection mode
+
+### Removed
+- Duplicate "New File" button from toolbar mid-screen (header button remains)
+
 ## [1.0.6] - 2026-03-26
 
 ### Added

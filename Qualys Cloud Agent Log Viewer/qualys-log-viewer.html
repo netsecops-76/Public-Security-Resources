@@ -232,16 +232,42 @@
   .asset-banner .value.status-pending { color: var(--warn); }
   .asset-banner .value.disconnected { color: var(--error); }
 
+  .tab-bar-wrapper {
+    display: none;
+    position: relative;
+    background: var(--header-bg);
+    border-bottom: 1px solid var(--border);
+  }
+  .tab-bar-wrapper.visible { display: flex; align-items: stretch; }
+
+  .tab-arrow {
+    display: none;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    min-width: 28px;
+    background: var(--header-bg);
+    color: var(--text-dim);
+    border: none;
+    cursor: pointer;
+    font-size: 12px;
+    padding: 0;
+    z-index: 2;
+    transition: color 0.15s;
+  }
+  .tab-arrow:hover { color: var(--text); }
+  .tab-arrow.visible { display: flex; }
+
   .tab-bar {
     background: var(--header-bg);
-    padding: 0 24px;
-    display: none;
+    padding: 0 4px;
+    display: flex;
     gap: 2px;
-    border-bottom: 1px solid var(--border);
     overflow-x: auto;
+    scrollbar-width: none;
+    flex: 1;
   }
-
-  .tab-bar.visible { display: flex; }
+  .tab-bar::-webkit-scrollbar { display: none; }
 
   .tab-item {
     padding: 8px 16px;
@@ -429,11 +455,31 @@
   .no-output-notice .status-tag.pending { background: rgba(249, 226, 175, 0.15); color: var(--warn); }
   .no-output-notice .status-tag.disconnected { background: rgba(243, 139, 168, 0.15); color: var(--error); }
 
-  .reset-btn {
-    padding: 5px 12px; border-radius: 6px; border: 1px solid var(--border);
-    background: var(--surface2); color: var(--text-dim); font-size: 12px; cursor: pointer;
+  /* Event selection & export */
+  .select-btn { padding: 5px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface2); color: var(--text-dim); font-size: 12px; cursor: pointer; }
+  .select-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .select-btn.active { border-color: var(--accent); color: var(--accent); background: rgba(137, 180, 250, 0.1); }
+  .export-bar {
+    display: none; align-items: center; gap: 10px;
+    padding: 6px 24px; background: var(--surface2); border-bottom: 1px solid var(--border); font-size: 12px;
   }
-  .reset-btn:hover { border-color: var(--error); color: var(--error); }
+  .export-bar.visible { display: flex; }
+  .export-bar button { padding: 4px 10px; border-radius: 5px; border: 1px solid var(--border); background: var(--surface); color: var(--text-dim); font-size: 12px; cursor: pointer; }
+  .export-bar button:hover { border-color: var(--accent); color: var(--accent); }
+  .export-bar .export-btn { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  .export-bar .export-btn:hover { background: rgba(137, 180, 250, 0.15); }
+  .export-bar .count { color: var(--text-dim); }
+  .log-line .line-check { display: none; }
+  .select-mode .log-line .line-check {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 16px; height: 16px; min-width: 16px; border-radius: 3px;
+    border: 1.5px solid var(--border); background: var(--surface);
+    cursor: pointer; margin-right: 6px; font-size: 11px; color: transparent; transition: all 0.12s;
+    vertical-align: middle; flex-shrink: 0;
+  }
+  .select-mode .log-line .line-check:hover { border-color: var(--accent); }
+  .select-mode .log-line .line-check.checked { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+  .select-mode .log-line.selected { background: rgba(137, 180, 250, 0.06); }
 
   .log-type-badge {
     padding: 3px 10px; border-radius: 6px; font-size: 11px; font-weight: 600; white-space: nowrap;
@@ -616,7 +662,7 @@
       <li><strong>Level Filters</strong> (All / Trace / Debug / Info / Warn / Error) &mdash; Show only log lines at the selected severity level. Error filter also includes PowerShell error blocks.</li>
       <li><strong>Redact</strong> &mdash; Toggle sensitive data masking (on by default). Redacts CustomerIDs, AgentIDs, IPs, MAC addresses, serial numbers, HMAC tokens, and UUIDs in URLs. Redaction is display-only &mdash; search still works on original values.</li>
       <li><strong>Newest First / Oldest First</strong> &mdash; Toggle sort order. Default is newest first since troubleshooting usually starts from the latest entries.</li>
-      <li><strong>New File</strong> &mdash; Reset and load different files.</li>
+      <li><strong>Select</strong> &mdash; Enter line selection mode. Checkboxes appear next to each log line. Pick individual lines, then use <strong>Export Selected</strong> to download a plain-text file with host details and each selected line separated by divider lines. The button changes to <strong>Cancel</strong> to exit selection mode. Use <strong>Select All</strong> / <strong>Deselect All</strong> for bulk operations. Exported files are named <code>hostname_logname_YYYYMMDDHHMMSS.txt</code>.</li>
     </ul>
 
     <h3>Smart Grouping</h3>
@@ -634,7 +680,7 @@
     <p>CAPI request and response payloads are detected automatically. Click the <code>{JSON}</code> button on a log line to expand a syntax-highlighted view. Keys appear in blue, strings in green, numbers in orange, and booleans in purple. Sensitive fields are redacted when redaction is enabled.</p>
 
     <h3>Multi-File Tabs</h3>
-    <p>When loading multiple files, each gets its own tab. Tab badges indicate status:</p>
+    <p>When loading multiple files, each gets its own tab. The viewer defaults to <code>qualys-cloud-agent.log</code> (Linux) or <code>Log.txt</code> (Windows) when available. Arrow buttons appear at the edges of the tab bar when there are more tabs than fit on screen. Tab badges indicate status:</p>
     <ul>
       <li><span class="badge-demo err">5</span> Error count (red) &mdash; files with errors appear first</li>
       <li><span class="badge-demo warn">3</span> Warning count (yellow)</li>
@@ -687,7 +733,11 @@
 </div>
 
 <div id="viewer" class="viewer">
-  <div class="tab-bar" id="tabBar"></div>
+  <div class="tab-bar-wrapper" id="tabBarWrapper">
+    <button class="tab-arrow left" id="tabArrowLeft" title="Scroll left">&#9664;</button>
+    <div class="tab-bar" id="tabBar"></div>
+    <button class="tab-arrow right" id="tabArrowRight" title="Scroll right">&#9654;</button>
+  </div>
   <div id="bannerContainer"></div>
   <div class="toolbar" id="toolbar">
     <input type="text" id="searchBox" placeholder="Search log messages..." autocomplete="off">
@@ -700,8 +750,14 @@
     <div class="toolbar-sep"></div>
     <button class="toggle-btn active" id="redactBtn" title="Toggle sensitive data redaction"><span class="icon">&#128274;</span> Redact</button>
     <button class="sort-btn" id="sortBtn" title="Toggle sort order">&#8595; Newest First</button>
+    <button class="select-btn" id="selectBtn" title="Select events for export">&#9745; Select</button>
     <span class="stats" id="stats"></span>
-    <button class="reset-btn" id="resetBtn">New File</button>
+  </div>
+  <div class="export-bar" id="exportBar">
+    <button id="selectAllBtn">Select All</button>
+    <button id="deselectAllBtn">Deselect All</button>
+    <span class="count" id="exportCount">0 selected</span>
+    <button class="export-btn" id="exportBtn">&#128196; Export Selected</button>
   </div>
   <div class="log-container" id="logContainer"></div>
 </div>
@@ -711,7 +767,8 @@ const $ = id => document.getElementById(id);
 const uploadBox = $('uploadBox'), fileInput = $('fileInput'), folderInput = $('folderInput');
 const uploadZone = $('uploadZone'), viewer = $('viewer'), logContainer = $('logContainer');
 const searchBox = $('searchBox'), statsEl = $('stats'), tabBar = $('tabBar');
-const bannerContainer = $('bannerContainer'), resetBtn = $('resetBtn');
+const tabBarWrapper = $('tabBarWrapper'), tabArrowLeft = $('tabArrowLeft'), tabArrowRight = $('tabArrowRight');
+const bannerContainer = $('bannerContainer');
 const typeBadge = $('typeBadge'), toolbar = $('toolbar');
 const redactBtn = $('redactBtn'), sortBtn = $('sortBtn');
 
@@ -750,14 +807,7 @@ uploadBox.addEventListener('drop', e => {
 });
 fileInput.addEventListener('change', e => { if (e.target.files.length) handleFiles(Array.from(e.target.files)); });
 folderInput.addEventListener('change', e => { if (e.target.files.length) handleFiles(Array.from(e.target.files)); });
-resetBtn.addEventListener('click', () => {
-  viewer.style.display = 'none'; uploadZone.style.display = 'flex';
-  typeBadge.style.display = 'none'; fileInput.value = ''; folderInput.value = '';
-  $('headerNewFileBtn').style.display = 'none';
-  allTabs = []; currentTabIdx = 0;
-});
-
-// Header New File button (mirrors resetBtn)
+// Header New File button
 $('headerNewFileBtn').addEventListener('click', () => {
   viewer.style.display = 'none'; uploadZone.style.display = 'flex';
   typeBadge.style.display = 'none'; fileInput.value = ''; folderInput.value = '';
@@ -816,10 +866,17 @@ async function handleFiles(files) {
     if (a.hasErrors !== b.hasErrors) return a.hasErrors ? -1 : 1;
     return a.label.localeCompare(b.label);
   });
-  currentTabIdx = 0;
+  // Default to the primary agent log (qualys-cloud-agent.log on Linux, log.txt on Windows)
+  const preferredNames = ['qualys-cloud-agent.log', 'log.txt'];
+  let defaultIdx = 0;
+  for (const pn of preferredNames) {
+    const idx = allTabs.findIndex(t => t.label.toLowerCase() === pn);
+    if (idx >= 0) { defaultIdx = idx; break; }
+  }
+  currentTabIdx = defaultIdx;
   uploadZone.style.display = 'none'; viewer.style.display = 'block';
   $('headerNewFileBtn').style.display = '';
-  buildTabs(); showTab(0);
+  buildTabs(); showTab(defaultIdx);
 }
 
 function readText(file) {
@@ -1599,10 +1656,19 @@ function groupGeneric(lines) {
 }
 
 // ===== Tab management =====
+function updateTabArrows() {
+  const sl = tabBar.scrollLeft, max = tabBar.scrollWidth - tabBar.clientWidth;
+  tabArrowLeft.classList.toggle('visible', sl > 2);
+  tabArrowRight.classList.toggle('visible', max > 2 && sl < max - 2);
+}
+tabBar.addEventListener('scroll', updateTabArrows);
+tabArrowLeft.onclick = () => { tabBar.scrollBy({ left: -160, behavior: 'smooth' }); };
+tabArrowRight.onclick = () => { tabBar.scrollBy({ left: 160, behavior: 'smooth' }); };
+
 function buildTabs() {
   tabBar.innerHTML = '';
-  if (allTabs.length <= 1) { tabBar.classList.remove('visible'); return; }
-  tabBar.classList.add('visible');
+  if (allTabs.length <= 1) { tabBarWrapper.classList.remove('visible'); return; }
+  tabBarWrapper.classList.add('visible');
   allTabs.forEach((tab, i) => {
     const el = document.createElement('div');
     el.className = 'tab-item' + (i === 0 ? ' active' : '');
@@ -1614,12 +1680,15 @@ function buildTabs() {
     el.onclick = () => showTab(i);
     tabBar.appendChild(el);
   });
+  requestAnimationFrame(updateTabArrows);
 }
 
 function showTab(idx) {
   currentTabIdx = idx;
   const tab = allTabs[idx];
-  tabBar.querySelectorAll('.tab-item').forEach((t, i) => t.classList.toggle('active', i === idx));
+  const tabItems = tabBar.querySelectorAll('.tab-item');
+  tabItems.forEach((t, i) => t.classList.toggle('active', i === idx));
+  if (tabItems[idx]) tabItems[idx].scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' });
   if (allTabs.length === 1) {
     typeBadge.textContent = tab.source === 'csv' ? 'CAR Report' : logTypeName(tab.logType);
     typeBadge.className = 'log-type-badge ' + (tab.source === 'csv' ? 'csv' : tab.logType);
@@ -1675,6 +1744,16 @@ function renderLogBanner(tab) {
 }
 
 // ===== Rendering =====
+window.toggleLineSelect = function(el) {
+  const isChecked = el.classList.toggle('checked');
+  el.textContent = isChecked ? '✓' : '';
+  const row = el.closest('.log-line');
+  if (row) row.classList.toggle('selected', isChecked);
+  const ln = el.dataset.ln;
+  if (isChecked) selectedLines.add(ln); else selectedLines.delete(ln);
+  updateExportCount();
+};
+
 function renderLog() {
   const tab = allTabs[currentTabIdx]; if (!tab) return;
   let lines = tab.lines || [];
@@ -1766,12 +1845,13 @@ function renderGroup(group, search, startCollapsed) {
   html += '<div class="event-group-body">';
   for (const line of group.lines) {
     const ln = line.originalLineNum || '';
+    const lchk = `<span class="line-check" data-ln="${ln}" onclick="event.stopPropagation();toggleLineSelect(this)"></span>`;
     if (line.isParsed) {
       const lc = line.level.toLowerCase();
       let mh = esc(line.message.split('\n')[0]);
       if (redactEnabled) mh = applyRedact(mh);
       if (search) mh = hilite(mh, search);
-      html += `<div class="log-line level-${lc}"><span class="line-num">${ln}</span>
+      html += `<div class="log-line level-${lc}" data-ln="${ln}"><span class="line-num">${ln}</span>${lchk}
         <span class="time">${esc(line.timestamp)}</span><span class="level ${lc}">${esc(line.level)}</span>
         <span class="process">[${esc(line.process || '')}:${esc(line.pid || '')}]</span><span class="message">${mh}`;
       if (line.jsonPayload) {
@@ -1786,10 +1866,10 @@ function renderGroup(group, search, startCollapsed) {
       html += `<div class="log-line banner"><span class="line-num">${ln}</span><span class="message">${esc(line.raw)}</span></div>`;
     } else if (line.lineType?.startsWith('ps-')) {
       let mh = esc(line.message); if (search) mh = hilite(mh, search);
-      html += `<div class="log-line ${line.lineType}"><span class="line-num">${ln}</span><span class="message">${mh}</span></div>`;
+      html += `<div class="log-line ${line.lineType}" data-ln="${ln}"><span class="line-num">${ln}</span>${lchk}<span class="message">${mh}</span></div>`;
     } else {
       let mh = esc(line.message); if (redactEnabled) mh = applyRedact(mh); if (search) mh = hilite(mh, search);
-      html += `<div class="log-line raw"><span class="line-num">${ln}</span><span class="message">${mh}</span></div>`;
+      html += `<div class="log-line raw" data-ln="${ln}"><span class="line-num">${ln}</span>${lchk}<span class="message">${mh}</span></div>`;
     }
   }
   html += '</div></div>';
@@ -1862,8 +1942,101 @@ searchBox.addEventListener('input', () => {
   searchTimer = setTimeout(() => { currentSearch = searchBox.value.trim(); renderLog(); }, 250);
 });
 
+// ===== Line Selection & Export =====
+let selectMode = false;
+const selectedLines = new Set();
+const selectBtn = $('selectBtn'), exportBar = $('exportBar');
+const exportBtn = $('exportBtn'), exportCount = $('exportCount');
+
+function updateExportCount() {
+  const n = selectedLines.size;
+  exportCount.textContent = n + ' selected';
+  exportBtn.disabled = n === 0;
+}
+
+selectBtn.addEventListener('click', () => {
+  selectMode = !selectMode;
+  selectBtn.classList.toggle('active', selectMode);
+  selectBtn.innerHTML = selectMode ? '&#10005; Cancel' : '&#9745; Select';
+  logContainer.classList.toggle('select-mode', selectMode);
+  exportBar.classList.toggle('visible', selectMode);
+  if (!selectMode) { selectedLines.clear(); updateExportCount(); }
+  renderLog();
+});
+
+$('selectAllBtn').addEventListener('click', () => {
+  logContainer.querySelectorAll('.line-check').forEach(cb => {
+    cb.classList.add('checked'); cb.textContent = '✓';
+    const row = cb.closest('.log-line');
+    if (row) row.classList.add('selected');
+    selectedLines.add(cb.dataset.ln);
+  });
+  updateExportCount();
+});
+
+$('deselectAllBtn').addEventListener('click', () => {
+  logContainer.querySelectorAll('.line-check').forEach(cb => {
+    cb.classList.remove('checked'); cb.textContent = '';
+    const row = cb.closest('.log-line');
+    if (row) row.classList.remove('selected');
+  });
+  selectedLines.clear(); updateExportCount();
+});
+
+exportBtn.addEventListener('click', () => {
+  if (!selectedLines.size) return;
+  const tab = allTabs[currentTabIdx]; if (!tab) return;
+  const m = tab.meta, c = m.capi || {};
+
+  // Build header
+  let out = '';
+  const headerFields = [
+    ['Host', c.hostname], ['OS', c.os ? c.os + (c.architecture ? ' (' + c.architecture + ')' : '') : ''],
+    ['Agent UUID', c.agentId], ['Agent Version', c.agentVersion],
+    ['Platform', c.platform], ['Provider', c.provider && c.provider !== 'NONE' ? c.provider : ''],
+    ['IPv4', c.ipv4], ['FQDN', c.fqdn], ['Log File', tab.label]
+  ];
+  for (const [label, val] of headerFields) {
+    if (val) out += label + ': ' + val + '\r\n';
+  }
+  out += '\r\n';
+
+  // Collect selected lines in DOM order
+  const sep = '='.repeat(80);
+  const allLineEls = logContainer.querySelectorAll('.log-line[data-ln]');
+  for (const le of allLineEls) {
+    if (!selectedLines.has(le.dataset.ln)) continue;
+    const parts = [];
+    const lineNum = le.querySelector('.line-num');
+    const time = le.querySelector('.time');
+    const level = le.querySelector('.level');
+    const proc = le.querySelector('.process');
+    const msg = le.querySelector('.message');
+    if (lineNum) parts.push(lineNum.textContent.trim());
+    if (time) parts.push(time.textContent.trim());
+    if (level) parts.push('[' + level.textContent.trim() + ']');
+    if (proc) parts.push(proc.textContent.trim());
+    if (msg) parts.push(msg.textContent.trim());
+    out += parts.join(' ') + '\r\n' + sep + '\r\n';
+  }
+
+  // Download
+  const blob = new Blob([out], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  const hostName = (c.hostname || 'export').replace(/[^a-zA-Z0-9_.-]/g, '_');
+  const logName = (tab.label.replace(/\.[^.]+$/, '') || 'log').replace(/[^a-zA-Z0-9_.-]/g, '_');
+  const now = new Date();
+  const ts = now.getFullYear() + String(now.getMonth()+1).padStart(2,'0') + String(now.getDate()).padStart(2,'0')
+    + String(now.getHours()).padStart(2,'0') + String(now.getMinutes()).padStart(2,'0') + String(now.getSeconds()).padStart(2,'0');
+  a.download = hostName + '_' + logName + '_' + ts + '.txt';
+  a.click();
+  URL.revokeObjectURL(url);
+});
+
 // --- Version check against GitHub ---
-const APP_VERSION = '1.0.6';
+const APP_VERSION = '1.0.7';
 const REPO_URL = 'https://github.com/netsecops-76/Public-Security-Resources/tree/Qualys-Cloud-Agent-Log-Viewer';
 const VERSION_RAW_URL = 'https://raw.githubusercontent.com/netsecops-76/Public-Security-Resources/Qualys-Cloud-Agent-Log-Viewer/version.txt';
 
