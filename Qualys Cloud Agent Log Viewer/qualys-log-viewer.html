@@ -647,7 +647,7 @@
       <div class="ud-actions">
         <button class="ud-btn" id="udDownloadBtn">
           <span class="ud-icon">&#11015;</span>
-          <div><div class="ud-label">Download Now</div><div class="ud-desc">Download the latest version and replace your current copy</div></div>
+          <div><div class="ud-label">Download Now</div><div class="ud-desc">Download the latest version as a new file and open it</div></div>
         </button>
         <button class="ud-btn" id="udGithubBtn">
           <span class="ud-icon">&#8594;</span>
@@ -740,7 +740,7 @@
     <p>On page load, the viewer checks for updates by fetching a version file from the <a href="https://github.com/netsecops-76/Public-Security-Resources/tree/Qualys-Cloud-Agent-Log-Viewer" target="_blank" rel="noopener">GitHub repository</a>. If a newer version is available, a yellow badge appears in the header showing how many versions behind you are (e.g., <strong>N-1</strong> = one version behind, <strong>N-3</strong> = three versions behind).</p>
     <p>Clicking <strong>Update</strong> opens a dropdown with two options:</p>
     <ul>
-      <li><strong>Download Now</strong> &mdash; Fetches the latest version directly from GitHub. On Chrome/Edge with local files, a save dialog opens pre-filled with the current filename &mdash; save to the same location to overwrite, then reload the page. On other browsers, the file downloads to your Downloads folder &mdash; move it to replace your current copy.</li>
+      <li><strong>Download Now</strong> &mdash; Fetches the latest version from GitHub and downloads it with a versioned filename (e.g., <code>qualys-log-viewer-1.0.9.html</code>). Open the new file to start using the updated version. You can delete the old version afterward.</li>
       <li><strong>Go to GitHub</strong> &mdash; Opens the repository in a new tab to browse or download manually.</li>
     </ul>
     <p>The dropdown also shows where your current copy is located so you know exactly where to save the update.</p>
@@ -2142,48 +2142,24 @@ $('udGithubBtn').addEventListener('click', () => {
 
 // Download update button
 $('udDownloadBtn').addEventListener('click', async () => {
-  udStatus.textContent = 'Downloading update...';
+  udStatus.textContent = 'Downloading v' + _latestVersion + '...';
   try {
     const resp = await fetch(HTML_RAW_URL, { cache: 'no-store' });
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const html = await resp.text();
+    const versionedName = 'qualys-log-viewer-' + _latestVersion + '.html';
 
-    // Try File System Access API for in-place save (Chrome/Edge on file://)
-    if (HOST_CONTEXT === 'local' && window.showSaveFilePicker) {
-      try {
-        const filename = location.pathname.split('/').pop() || 'qualys-log-viewer.html';
-        const handle = await window.showSaveFilePicker({
-          suggestedName: decodeURIComponent(filename),
-          types: [{ description: 'HTML File', accept: { 'text/html': ['.html'] } }]
-        });
-        const writable = await handle.createWritable();
-        await writable.write(html);
-        await writable.close();
-        updateDropdown.classList.remove('open');
-        const badge = $('versionBadge');
-        badge.className = 'version-badge latest';
-        badge.innerHTML = '&#10003; Updated to v' + _latestVersion + '! Reload page.';
-        return;
-      } catch (e) {
-        if (e.name === 'AbortError') { udStatus.textContent = ''; return; }
-        // Fall through to standard download
-      }
-    }
-
-    // Standard download fallback
     const blob = new Blob([html], { type: 'text/html' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'qualys-log-viewer.html';
+    a.download = versionedName;
     a.click();
     URL.revokeObjectURL(url);
-    if (HOST_CONTEXT === 'local') {
-      const fp = decodeURIComponent(location.pathname);
-      udStatus.innerHTML = '&#10003; Downloaded! Move the file to:<br><code style="font-size:11px">' + fp + '</code><br>then reload this page.';
-    } else {
-      udStatus.innerHTML = '&#10003; Downloaded! Replace the file on your server, then reload.';
-    }
+    updateDropdown.classList.remove('open');
+    const badge = $('versionBadge');
+    badge.className = 'version-badge latest';
+    badge.innerHTML = '&#10003; Downloaded <strong>' + versionedName + '</strong> &mdash; open it to use v' + _latestVersion;
   } catch (e) {
     udStatus.textContent = 'Download failed: ' + e.message;
   }
