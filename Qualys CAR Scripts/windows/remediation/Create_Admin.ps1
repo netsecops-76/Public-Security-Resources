@@ -40,28 +40,28 @@
 # CAR UI PARAMETERS (define on Script Details page in this EXACT order):
 # ==============================================================================
 #
-#   Position 1:  Username
-#     Type:      String
-#     Required:  Yes
-#     Default:   (none)
-#     Example:   TEMPADMIN
-#     Purpose:   Local account to create, repair, or remove. Must be a
-#                valid POSIX-ish name (letters, digits, underscore, dash).
-#
-#   Position 2:  Password
-#     Type:      String   (mark as sensitive / masked if CAR version supports)
-#     Required:  Yes
-#     Default:   (none)
-#     Example:   <strong-literal>
-#     Purpose:   Initial password for the account. Masked as *** in the
-#                runtime banner and log file. NEVER leave as CHANGE_ME.
-#
-#   Position 3:  RunMode
+#   Position 1:  RunMode
 #     Type:      String
 #     Required:  No
 #     Default:   1
 #     Allowed:   1 = create or repair (non-destructive if account exists)
 #                2 = remove (terminates user processes, deletes account)
+#
+#   Position 2:  Username
+#     Type:      String
+#     Required:  Yes
+#     Default:   (none)
+#     Example:   TEMPADMIN
+#     Purpose:   Local account to create, repair, or remove.
+#
+#   Position 3:  Password
+#     Type:      String   (mark as sensitive / masked if CAR version supports)
+#     Required:  For Mode 1 (create-or-repair). Not needed for Mode 2.
+#     Default:   (none)
+#     Purpose:   Initial password for the account. Masked as *** in the
+#                runtime banner and log file. NEVER leave as CHANGE_ME.
+#                Intentionally LAST so omitting it for Mode 2 does not
+#                shift the preceding arguments.
 #
 # ==============================================================================
 # QUALYS CAR SETUP GUIDE (first-time deployment):
@@ -76,20 +76,23 @@
 #        Interpreter: PowerShell
 #        Upload:      Create_Admin.ps1 from this repo
 #   4. Parameters tab (ORDER MATTERS, positional):
-#        Add parameter: Username   (String, Required, no default)
-#        Add parameter: Password   (String, Required, mark sensitive/masked)
 #        Add parameter: RunMode    (String, Optional, default "1")
+#        Add parameter: Username   (String, Required, no default)
+#        Add parameter: Password   (String, Required for Mode 1, mark sensitive)
+#        NOTE: Password is LAST so leaving it blank for Mode 2 does
+#              not shift the preceding arguments.
 #   5. Save. Attach the script to a CAR Job that targets the intended assets.
 #   6. Runtime output is captured by the Qualys Cloud Agent. Review via
 #        CAR -> Jobs -> <job> -> Results -> Script Output.
 #
 # CLI INVOCATION (local testing):
-#   .\Create_Admin.ps1 <Username> <Password> <RunMode>
-#   .\Create_Admin.ps1 TEMPADMIN 'MyP@ss!' 1
+#   .\Create_Admin.ps1 <RunMode> <Username> [<Password>]
+#   .\Create_Admin.ps1 1 TEMPADMIN 'MyP@ss!'
+#   .\Create_Admin.ps1 2 TEMPADMIN
 #
 # CAR INVOKES EQUIVALENT TO:
 #   powershell.exe -ExecutionPolicy Bypass -File Create_Admin.ps1 `
-#                  "<Username>" "<Password>" "<RunMode>"
+#                  "<RunMode>" "<Username>" "<Password>"
 #
 # DUAL-INVOCATION FALLBACK:
 #   Positional params win. If any param is omitted or empty, the script
@@ -103,11 +106,16 @@
 .NOTES
     Author:      Brian Canaday
     Team:        netsecops-76
-    Version:     3.0.1
+    Version:     3.1.0
     Created:     2026-04-20
     Script:      Create_Admin.ps1
 
     Changelog:
+        3.1.0 - 2026-04-22 - Fix CAR positional-arg shift bug. Move
+                              Password to last position and RunMode to
+                              first so that omitting Password for Mode 2
+                              does not shift RunMode. New order:
+                              RunMode, Username, Password.
         3.0.1 - 2026-04-21 - Mode 2 process-kill: catch the specific
                               ProcessCommandException thrown when a PID
                               has already exited between the Win32_Process
@@ -153,13 +161,13 @@
 
 param(
     [Parameter(Position=0)]
-    [string]$Username = '',
+    [string]$RunMode = '',
 
     [Parameter(Position=1)]
-    [string]$Password = '',
+    [string]$Username = '',
 
     [Parameter(Position=2)]
-    [string]$RunMode = ''
+    [string]$Password = ''
 )
 
 Set-StrictMode -Version Latest
@@ -183,7 +191,7 @@ $RunModeNum = [int]$RunMode
 
 # -------- globals / state --------
 $ScriptName    = 'Create_Admin.ps1'
-$ScriptVersion = '3.0.1'
+$ScriptVersion = '3.1.0'
 $StartedAt     = Get-Date
 $HostName      = $env:COMPUTERNAME
 

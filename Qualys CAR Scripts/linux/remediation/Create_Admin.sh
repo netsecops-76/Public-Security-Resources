@@ -4,7 +4,7 @@
 # ==============================================================================
 # Author:    Brian Canaday
 # Team:      netsecops-76
-# Version:   3.0.1
+# Version:   3.1.0
 # Created:   2026-04-20
 #
 # Description:
@@ -55,14 +55,12 @@
 # CAR UI PARAMETERS (define on Script Details page in this EXACT order):
 # ==============================================================================
 #
-#   Position 1:  Username
+#   Position 1:  RunMode
 #     Type:      String
-#     Required:  Yes
-#     Default:   (none)
-#     Example:   TEMPADMIN
-#     Purpose:   Local account to create, repair, or remove. Must match
-#                POSIX rules: lowercase letters, digits, underscore, dash;
-#                1-32 chars; cannot start with a digit.
+#     Required:  No
+#     Default:   1
+#     Allowed:   1 = create-or-repair (non-destructive if account exists)
+#                2 = remove (terminates user processes, deletes account)
 #
 #   Position 2:  AuthMethod
 #     Type:      String
@@ -72,21 +70,25 @@
 #     Purpose:   Whether to provision SSH-key auth or a login password.
 #                "rsa" generates a 4096-bit PEM keypair for the user.
 #
-#   Position 3:  Password
+#   Position 3:  Username
+#     Type:      String
+#     Required:  Yes
+#     Default:   (none)
+#     Example:   TEMPADMIN
+#     Purpose:   Local account to create, repair, or remove. Must match
+#                POSIX rules: lowercase letters, digits, underscore, dash;
+#                1-32 chars; cannot start with a digit.
+#
+#   Position 4:  Password
 #     Type:      String   (mark sensitive / masked if CAR supports it)
 #     Required:  Conditional
-#                - Empty allowed only when AuthMethod=rsa (account stays locked)
+#                - Empty / omitted when AuthMethod=rsa (account stays locked)
 #                - Required (non-empty) when AuthMethod=password
 #     Default:   (empty)
 #     Purpose:   Initial password for the account. Masked as *** in banner
 #                and log output. NEVER leave as "CHANGE_ME".
-#
-#   Position 4:  RunMode
-#     Type:      String
-#     Required:  No
-#     Default:   1
-#     Allowed:   1 = create-or-repair (non-destructive if account exists)
-#                2 = remove (terminates user processes, deletes account)
+#                Intentionally LAST so omitting it does not shift the
+#                preceding arguments.
 #
 # ==============================================================================
 # QUALYS CAR SETUP GUIDE (first-time deployment):
@@ -101,26 +103,29 @@
 #        Interpreter: Bash (shebang /usr/bin/env bash in the script)
 #        Upload:      Create_Admin.sh from this repo
 #   4. Parameters tab (ORDER MATTERS - positional):
-#        Add parameter: Username    (String, Required, no default)
-#        Add parameter: AuthMethod  (String, Optional, default "rsa")
-#        Add parameter: Password    (String, Optional, mark sensitive)
 #        Add parameter: RunMode     (String, Optional, default "1")
+#        Add parameter: AuthMethod  (String, Optional, default "rsa")
+#        Add parameter: Username    (String, Required, no default)
+#        Add parameter: Password    (String, Optional, mark sensitive)
+#        NOTE: Password is LAST so leaving it blank does not shift the
+#              preceding arguments.
 #   5. Save. Attach the script to a CAR Job that targets the intended assets.
 #   6. Runtime output is captured by the Qualys Cloud Agent. Review via
 #        CAR -> Jobs -> <job> -> Results -> Script Output.
 #
 # CLI INVOCATION (local testing):
-#   sudo ./Create_Admin.sh <Username> <AuthMethod> <Password> <RunMode>
-#   sudo ./Create_Admin.sh TEMPADMIN rsa "" 1
-#   sudo ./Create_Admin.sh TEMPADMIN password 'MyP@ss' 1
+#   sudo ./Create_Admin.sh <RunMode> <AuthMethod> <Username> [<Password>]
+#   sudo ./Create_Admin.sh 1 rsa TEMPADMIN
+#   sudo ./Create_Admin.sh 2 rsa TEMPADMIN
+#   sudo ./Create_Admin.sh 1 password TEMPADMIN 'MyP@ss'
 #
 # CAR INVOKES EQUIVALENT TO:
-#   /bin/bash Create_Admin.sh "<Username>" "<AuthMethod>" "<Password>" "<RunMode>"
+#   /bin/bash Create_Admin.sh "<RunMode>" "<AuthMethod>" "<Username>" "<Password>"
 #
 # DUAL-INVOCATION FALLBACK:
 #   Positional args win. If any positional is empty, the script checks the
-#   same-named environment variable ($USERNAME, $AUTH_METHOD, $PASSWORD,
-#   $RUN_MODE) before applying defaults. Lets local developers export vars
+#   same-named environment variable ($RUN_MODE, $AUTH_METHOD, $USERNAME,
+#   $PASSWORD) before applying defaults. Lets local developers export vars
 #   once and rerun without retyping positional args.
 #
 # Exit Codes:
@@ -129,6 +134,15 @@
 #   2  = Fatal error / must be run as root / invalid parameters
 #
 # Changelog:
+#   3.1.0 - 2026-04-22 - Fix CAR positional-arg shift bug. When Password
+#                        is left blank in the CAR UI, some CAR versions
+#                        omit the empty parameter entirely instead of
+#                        passing "". This shifted RunMode into the
+#                        Password position, causing Mode 2 runs to
+#                        execute as Mode 1. Fix: reorder positional
+#                        params so RunMode is first and Password is
+#                        last. New order: RunMode, AuthMethod,
+#                        Username, Password.
 #   3.0.1 - 2026-04-21 - Mode 2 session-termination: SIGTERM -> SIGKILL
 #                        escalation is the routine fallback by design, not
 #                        a failure. Downgrade that log line from [WARN]
@@ -169,16 +183,21 @@ set -o pipefail
 
 # ============================================================
 # PARAMETER RESOLUTION: positional first, env fallback, defaults last.
+#
+# IMPORTANT: Password is intentionally LAST so that when CAR omits
+# empty parameters (rather than passing ""), the other three fields
+# don't shift. Common case: AuthMethod=rsa with no password means
+# CAR sends only 3 args and position 4 is simply absent.
 # ============================================================
-USERNAME="${1:-${USERNAME:-}}"
+RUN_MODE="${1:-${RUN_MODE:-1}}"
 AUTH_METHOD="${2:-${AUTH_METHOD:-rsa}}"
-PASSWORD="${3:-${PASSWORD:-}}"
-RUN_MODE="${4:-${RUN_MODE:-1}}"
+USERNAME="${3:-${USERNAME:-}}"
+PASSWORD="${4:-${PASSWORD:-}}"
 # ============================================================
 
 # -------- globals / state --------
 SCRIPT_NAME="Create_Admin.sh"
-SCRIPT_VERSION="3.0.1"
+SCRIPT_VERSION="3.1.0"
 STAMP="$(date '+%Y%m%d_%H%M%S')"
 HOSTNAME_LOCAL="$(hostname 2>/dev/null || echo unknown)"
 STARTED_AT="$(date '+%Y-%m-%dT%H:%M:%S%z')"

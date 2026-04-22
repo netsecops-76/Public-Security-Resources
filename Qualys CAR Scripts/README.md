@@ -16,8 +16,8 @@ UI-defined **positional parameters** you configure on the Script Details page.
 |---|---|---|---|---|---|
 | [`windows/assessment/Get-DatabaseInventory.ps1`](windows/assessment/Get-DatabaseInventory.ps1) | Windows | Inventory installed databases, ports, auth config, catalogs | 3.0.0 | 9 | Read-only assessment |
 | [`linux/assessment/get-database-inventory.sh`](linux/assessment/get-database-inventory.sh) | Linux | Inventory installed databases, ports, auth config, catalogs | 3.0.0 | 9 | Read-only assessment |
-| [`windows/remediation/Create_Admin.ps1`](windows/remediation/Create_Admin.ps1) | Windows | Create / repair / remove a local Administrator account | 3.0.1 | 3 | Create or Remove |
-| [`linux/remediation/Create_Admin.sh`](linux/remediation/Create_Admin.sh) | Linux | Create / repair / remove a local admin with RSA or password auth | 3.0.1 | 4 | Create or Remove |
+| [`windows/remediation/Create_Admin.ps1`](windows/remediation/Create_Admin.ps1) | Windows | Create / repair / remove a local Administrator account | 3.1.0 | 3 | Create or Remove |
+| [`linux/remediation/Create_Admin.sh`](linux/remediation/Create_Admin.sh) | Linux | Create / repair / remove a local admin with RSA or password auth | 3.1.0 | 4 | Create or Remove |
 | [`windows/remediation/Remove-BigFix.ps1`](windows/remediation/Remove-BigFix.ps1) | Windows | Audit / uninstall the BigFix / BESClient agent | 3.1.0 | 3 | Audit or Enforce |
 | [`linux/remediation/remove-bigfix.sh`](linux/remediation/remove-bigfix.sh) | Linux | Audit / uninstall the BigFix / BESClient agent on RPM + DEB | 3.1.0 | 4 | Audit or Enforce |
 | [`windows/remediation/Remove-Okta.ps1`](windows/remediation/Remove-Okta.ps1) | Windows | Audit / uninstall ScaleFT / sftd and artifacts | 3.1.0 | 3 | Audit or Enforce |
@@ -27,8 +27,8 @@ UI-defined **positional parameters** you configure on the Script Details page.
 
 | Script | P1 | P2 | P3 | P4 | P5 | P6 | P7 | P8 | P9 |
 |---|---|---|---|---|---|---|---|---|---|
-| `Create_Admin.ps1` | Username | Password | RunMode | | | | | | |
-| `Create_Admin.sh` | Username | AuthMethod | Password | RunMode | | | | | |
+| `Create_Admin.ps1` | RunMode | Username | Password | | | | | | |
+| `Create_Admin.sh` | RunMode | AuthMethod | Username | Password | | | | | |
 | `Remove-BigFix.ps1` | RunMode | CleanupOnly | UseBESRemoveIfFound | | | | | | |
 | `remove-bigfix.sh` | RunMode | CleanupOnly | FullCleanup | PackagesOnly | | | | | |
 | `Remove-Okta.ps1` | RunMode | CleanupOnly | IncludeCurrentUser | | | | | | |

@@ -18,6 +18,12 @@ order, with what types and defaults, for each script.
 - **All parameters are type `String` in CAR.** CAR passes everything as a
   string. The scripts coerce strings to bools (`Yes/No/True/False/1/0/On/Off`,
   case-insensitive) and ints where needed.
+- **Blank-parameter shift risk.** Some CAR versions omit empty parameters
+  entirely instead of passing `""`. If a blank parameter sits before a
+  populated one, the populated value shifts into the wrong position. To
+  avoid this, **always put optional or commonly-blank parameters at the
+  end of the positional list.** This is why `Password` is the last
+  parameter on both `Create_Admin` scripts.
 - **Audit-first.** `RunMode` defaults to `Audit` on every remediation script.
   Destructive action requires explicit `Enforce`.
 - **Dual invocation.** Positional args win. If a positional is empty, the
@@ -52,13 +58,13 @@ order, with what types and defaults, for each script.
 
 | Pos | Name | Type | Required | Default | Notes |
 |----:|------|------|:--------:|---------|-------|
-| 1 | `Username` | String | Yes | (none) | Local account to create/repair/remove. |
-| 2 | `Password` | String (mark sensitive) | Yes | (none) | Initial password. **Masked as `***` in output.** |
-| 3 | `RunMode` | String | No | `1` | `1` = create-or-repair, `2` = remove. |
+| 1 | `RunMode` | String | No | `1` | `1` = create-or-repair, `2` = remove. |
+| 2 | `Username` | String | Yes | (none) | Local account to create/repair/remove. |
+| 3 | `Password` | String (mark sensitive) | For Mode 1 | (none) | Initial password. **Masked as `***` in output.** Intentionally last so omitting for Mode 2 doesn't shift args. |
 
 **Example values:**
-- `TEMPADMIN`, `<strong-literal>`, `1` -> create or repair
-- `TEMPADMIN`, `<strong-literal>`, `2` -> remove (terminates user processes, deletes account)
+- `1`, `TEMPADMIN`, `<strong-literal>` -> create or repair
+- `2`, `TEMPADMIN` -> remove (Password omitted; no shift)
 
 **Operator notes:**
 - **Password is visible to any user with script-edit rights on the CAR
@@ -77,15 +83,15 @@ order, with what types and defaults, for each script.
 
 | Pos | Name | Type | Required | Default | Notes |
 |----:|------|------|:--------:|---------|-------|
-| 1 | `Username` | String | Yes | (none) | Local account to create/repair/remove (POSIX rules). |
+| 1 | `RunMode` | String | No | `1` | `1` = create-or-repair, `2` = remove. |
 | 2 | `AuthMethod` | String | No | `rsa` | `rsa` \| `password`. |
-| 3 | `Password` | String (mark sensitive) | Conditional | `""` | Empty allowed only with `AuthMethod=rsa` (locks pw). Required for `AuthMethod=password`. **Masked as `***` in output.** |
-| 4 | `RunMode` | String | No | `1` | `1` = create-or-repair, `2` = remove. |
+| 3 | `Username` | String | Yes | (none) | Local account to create/repair/remove (POSIX rules). |
+| 4 | `Password` | String (mark sensitive) | Conditional | `""` | Empty allowed only with `AuthMethod=rsa` (locks pw). Required for `AuthMethod=password`. **Masked as `***` in output.** Intentionally last so omitting for Mode 2 / rsa doesn't shift args. |
 
 **Example values:**
-- `TEMPADMIN`, `rsa`, `""`, `1` -> create with 4096-bit RSA keypair, password locked
-- `TEMPADMIN`, `password`, `<strong-literal>`, `1` -> create with a login password
-- `TEMPADMIN`, `rsa`, `""`, `2` -> remove (kills user sessions, `userdel -r`, cleanup)
+- `1`, `rsa`, `TEMPADMIN` -> create with RSA keypair, password locked (Password omitted)
+- `1`, `password`, `TEMPADMIN`, `<strong-literal>` -> create with a login password
+- `2`, `rsa`, `TEMPADMIN` -> remove (Password omitted; no arg shift)
 
 **Operator notes:**
 - **Password (when used) is visible to any user with script-edit rights.**
@@ -260,8 +266,8 @@ as `false`.
 
 | Script | Pos1 | Pos2 | Pos3 | Pos4 | Pos5 | Pos6 | Pos7 | Pos8 | Pos9 |
 |---|---|---|---|---|---|---|---|---|---|
-| `Create_Admin.ps1` | Username | Password | RunMode | - | - | - | - | - | - |
-| `Create_Admin.sh` | Username | AuthMethod | Password | RunMode | - | - | - | - | - |
+| `Create_Admin.ps1` | RunMode | Username | Password | - | - | - | - | - | - |
+| `Create_Admin.sh` | RunMode | AuthMethod | Username | Password | - | - | - | - | - |
 | `Remove-BigFix.ps1` | RunMode | CleanupOnly | UseBESRemoveIfFound | - | - | - | - | - | - |
 | `remove-bigfix.sh` | RunMode | CleanupOnly | FullCleanup | PackagesOnly | - | - | - | - | - |
 | `Remove-Okta.ps1` | RunMode | CleanupOnly | IncludeCurrentUser | - | - | - | - | - | - |
