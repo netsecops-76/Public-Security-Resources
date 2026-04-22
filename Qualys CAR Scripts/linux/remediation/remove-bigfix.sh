@@ -4,14 +4,23 @@
 # ==============================================================================
 # Author:    Brian Canaday
 # Team:      netsecops-76
-# Version:   3.0.0
+# Version:   3.1.0
 # Created:   2026-04-03
 #
 # Description:
-#   Audits or uninstalls the IBM/HCL BigFix client and associated artifacts
-#   on RHEL/CentOS/Rocky/Alma (RPM) and Debian/Ubuntu (DEB) Linux. Designed
-#   for unattended execution via Qualys Cloud Agent / CAR using UI-defined
-#   POSITIONAL parameters.
+#   Audits or uninstalls the BigFix / BESClient agent and associated
+#   artifacts on RHEL/CentOS/Rocky/Alma (RPM) and Debian/Ubuntu (DEB)
+#   Linux. Designed for unattended execution via Qualys Cloud Agent / CAR
+#   using UI-defined POSITIONAL parameters.
+#
+#   Target software (exclusively):
+#       BES (BigFix), besclient, BESClient
+#
+#   NOTE: This script targets ONLY the BESClient agent. Server-side
+#   components (BESRelay, BESServer, BESRootServer, BESFillDB, BESGatherDB,
+#   BESWebReports, BESWebUI, BESPluginPortal) and legacy vendor branding
+#   (IBM Endpoint Manager, Tivoli Endpoint Manager) are intentionally
+#   excluded.
 #
 #   Audit-first: by default, nothing is changed. Operator must explicitly
 #   set RunMode=Enforce to perform the destructive uninstall workflow.
@@ -89,6 +98,14 @@
 #   2  = Must be run as root
 #
 # Changelog:
+#   3.1.0 - 2026-04-22 - Narrow target scope to BES (BigFix) / besclient /
+#                        BESClient agent ONLY. Removed server-side
+#                        components (BESRelay, BESServer, BESRootServer,
+#                        BESFillDB, BESGatherDB, BESWebReports, BESWebUI,
+#                        BESPluginPortal), legacy vendor branding (IBM
+#                        Endpoint Manager, Tivoli Endpoint Manager), and
+#                        utility processes (qna, xqna) from all discovery
+#                        arrays and patterns.
 #   3.0.0 - 2026-04-20 - CAR parameterization refactor. Replaces named
 #                        flags with POSITIONAL string parameters (RunMode,
 #                        CleanupOnly, FullCleanup, PackagesOnly) consumable
@@ -238,7 +255,7 @@ run_silent() {
 # ------------------------------------------------------------------------------
 clear || true
 echo "================================================================"
-echo "  remove-bigfix.sh  v3.0.0"
+echo "  remove-bigfix.sh  v3.1.0"
 echo "  Host         : $(hostname -f 2>/dev/null || hostname)"
 echo "  Started      : $(date '+%Y-%m-%d %H:%M:%S')"
 echo "  Log          : ${LOG_FILE}"
@@ -256,7 +273,7 @@ if [ "${UNINSTALL}" -eq 0 ]; then
 fi
 echo ""
 
-log "remove-bigfix.sh v3.0.0 started - Mode: ${MODE}"
+log "remove-bigfix.sh v3.1.0 started - Mode: ${MODE}"
 log "Params: RunMode=${RUN_MODE} CleanupOnly=${CLEANUP_ONLY_STR} FullCleanup=${FULL_CLEANUP_STR} PackagesOnly=${PACKAGES_ONLY_STR}"
 log "Flags:  UNINSTALL=${UNINSTALL} CLEANUP_ONLY=${CLEANUP_ONLY} FULL_CLEANUP=${FULL_CLEANUP} PACKAGES_ONLY=${PACKAGES_ONLY}"
 
@@ -323,17 +340,9 @@ fi
 log "[Step 1/6] Services - Mode: ${MODE}"
 
 if [ "${PACKAGES_ONLY}" -eq 0 ] || [ "${UNINSTALL}" -eq 0 ]; then
-    check_service beswebui
-    check_service beswebreports
-    check_service beswebreportsserver
-    check_service besrelay
-    check_service besgatherdb
-    check_service besfilldb
-    check_service besserver
     check_service besclient
     check_service besagent
     check_service BESClient
-    check_service BESRelay
 
     if [ "${SERVICES_FOUND}" -eq 0 ]; then
         log_skip "No BigFix services found."
@@ -357,16 +366,7 @@ log "[Step 2/6] Processes - Mode: ${MODE}"
 
 BES_PROC_PATTERNS=(
     "BESClient"
-    "BESRelay"
-    "BESRootServer"
-    "BESFillDB"
-    "BESGatherDB"
-    "BESWebReportsServer"
-    "BESWebUI"
-    "BESPluginPortal"
     "BESAgentService"
-    "qna"
-    "xqna"
 )
 
 scan_bigfix_processes() {
@@ -416,7 +416,7 @@ log "[Step 3/6] Packages - Mode: ${MODE}"
 # --- RPM ---
 discover_rpm_packages() {
     if [ "${HAS_RPM}" -eq 0 ]; then echo ""; return; fi
-    rpm -qa 2>/dev/null | grep -Ei '^(BES|bigfix|HCLBigFix)' | sort -u
+    rpm -qa 2>/dev/null | grep -Ei '^(BESClient|besclient|bigfix)' | sort -u
 }
 
 remove_rpm_package() {
@@ -433,7 +433,7 @@ remove_rpm_package() {
 # --- DEB ---
 discover_deb_packages() {
     if [ "${HAS_DEB}" -eq 0 ]; then echo ""; return; fi
-    dpkg-query -W -f='${Package}\n' 2>/dev/null | grep -Ei '^(bes|bigfix|hclbigfix)' | sort -u
+    dpkg-query -W -f='${Package}\n' 2>/dev/null | grep -Ei '^(besclient|bigfix)' | sort -u
 }
 
 remove_deb_package() {
@@ -498,16 +498,10 @@ elif [ "${UNINSTALL}" -eq 0 ]; then
 else
     # Active removal - RPM ordered
     RPM_ORDERED_PATTERNS=(
-        "BESWebUI"
-        "BESWebReportsServer"
-        "BESRootServer"
-        "BESRelay"
-        "BESClientDeployTool"
-        "BESAgentInstall"
         "BESAgent"
         "BESClient"
+        "besclient"
         "bigfix"
-        "HCLBigFix"
     )
 
     if [ -n "${FOUND_RPM_PKGS}" ]; then
@@ -536,16 +530,9 @@ ${pkg}"
 
     # Active removal - DEB ordered
     DEB_ORDERED_PATTERNS=(
-        "beswebui"
-        "beswebreports"
-        "besrootserver"
-        "besrelay"
-        "besclientdeploy"
-        "besagentinstall"
         "besagent"
         "besclient"
         "bigfix"
-        "hclbigfix"
     )
 
     if [ -n "${FOUND_DEB_PKGS}" ]; then
@@ -596,38 +583,16 @@ log "[Step 4/6] Filesystem - Mode: ${MODE}"
 
 BES_DIRS=(
     /etc/opt/BESClient
-    /etc/opt/BESRelay
-    /etc/opt/BESServer
-    /etc/opt/BESRootServer
-    /etc/opt/BESWebReportsServer
-    /etc/opt/BESWebUI
-    /etc/opt/BESPluginPortal
     /opt/BESClient
-    /opt/BESRelay
-    /opt/BESServer
-    /opt/BESRootServer
-    /opt/BESWebReportsServer
-    /opt/BESWebUI
-    /opt/BESPluginPortal
-    /opt/IBM/BigFix
     /opt/HCL/BigFix
     /var/opt/BESClient
-    /var/opt/BESRelay
-    /var/opt/BESServer
-    /var/opt/BESRootServer
-    /var/opt/BESWebReportsServer
-    /var/opt/BESWebUI
-    /var/opt/BESPluginPortal
     /tmp/BES
     /tmp/besclient
 )
 
 BES_LOGS=(
     /var/log/BESClient.log
-    /var/log/BESRelay.log
     /var/log/BESInstall.log
-    /var/log/BESAdminDebugOut.txt
-    /var/log/BESWebReports
 )
 
 if [ "${PACKAGES_ONLY}" -eq 0 ] || [ "${UNINSTALL}" -eq 0 ]; then
@@ -701,32 +666,14 @@ log "[Step 5/6] Service files / ld.so - Mode: ${MODE}"
 BES_SERVICE_FILES=(
     /etc/init.d/besclient
     /etc/init.d/BESClient
-    /etc/init.d/besrelay
-    /etc/init.d/BESRelay
-    /etc/init.d/besserver
-    /etc/init.d/besfilldb
-    /etc/init.d/besgatherdb
-    /etc/init.d/beswebreports
-    /etc/init.d/beswebreportsserver
-    /etc/init.d/beswebui
     /usr/lib/systemd/system/besclient.service
     /usr/lib/systemd/system/BESClient.service
-    /usr/lib/systemd/system/besrelay.service
-    /usr/lib/systemd/system/besserver.service
-    /usr/lib/systemd/system/besfilldb.service
-    /usr/lib/systemd/system/besgatherdb.service
-    /usr/lib/systemd/system/beswebreports.service
-    /usr/lib/systemd/system/beswebreportsserver.service
-    /usr/lib/systemd/system/beswebui.service
     /etc/systemd/system/besclient.service
     /etc/systemd/system/BESClient.service
-    /etc/systemd/system/besrelay.service
 )
 
 BES_LD_CONF_FILES=(
     /etc/ld.so.conf.d/BESClient.conf
-    /etc/ld.so.conf.d/BESRelay.conf
-    /etc/ld.so.conf.d/BESServer.conf
     /etc/ld.so.conf.d/bes.conf
     /etc/ld.so.conf.d/bigfix.conf
 )
@@ -791,7 +738,6 @@ log "[Step 6/6] Cron - Mode: ${MODE}"
 BES_CRON_PATHS=(
     /etc/cron.d/besclient
     /etc/cron.d/BESClient
-    /etc/cron.d/besrelay
     /etc/cron.d/bigfix
 )
 

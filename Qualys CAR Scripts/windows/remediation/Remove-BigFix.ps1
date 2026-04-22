@@ -1,11 +1,14 @@
 <#
 .SYNOPSIS
-    Audits or removes IBM/HCL BigFix client software and all associated
-    artifacts from a Windows host. Deployed via Qualys CAR using UI-defined
+    Audits or removes the BigFix / BESClient agent and associated artifacts
+    from a Windows host. Deployed via Qualys CAR using UI-defined
     POSITIONAL parameters.
 
+    Target software (exclusively):
+        BES (BigFix), besclient, BESClient
+
 .DESCRIPTION
-    By default this script runs in AUDIT MODE only. It discovers BigFix
+    By default this script runs in AUDIT MODE only. It discovers BESClient
     services, processes, installed products, filesystem directories,
     registry keys, scheduled tasks, and firewall rules, then reports what
     was found and what would be uninstalled. No changes are made in audit
@@ -14,6 +17,12 @@
     Run with RunMode=Enforce to invoke the full removal workflow: stop
     services, kill processes, uninstall products, remove filesystem
     artifacts, registry keys, scheduled tasks, and firewall rules.
+
+    NOTE: This script targets ONLY the BESClient agent. Server-side
+    components (BESRelay, BESServer, BESRootServer, BESFillDB, BESGatherDB,
+    BESWebReports, BESWebUI, BESPluginPortal, BESAdmin) and legacy vendor
+    branding (IBM Endpoint Manager, Tivoli Endpoint Manager) are
+    intentionally excluded.
 
 # ==============================================================================
 # CAR UI PARAMETERS (define on Script Details page in this EXACT order):
@@ -87,11 +96,21 @@
 .NOTES
     Author:      Brian Canaday
     Team:        netsecops-76
-    Version:     3.0.0
+    Version:     3.1.0
     Created:     2026-04-03
     Script:      Remove-BigFix.ps1
 
     Changelog:
+        3.1.0 - 2026-04-22 - Narrow target scope to BES (BigFix) /
+                              besclient / BESClient agent ONLY. Removed
+                              server-side components (BESRelay, BESServer,
+                              BESRootServer, BESFillDB, BESGatherDB,
+                              BESWebReports, BESWebUI, BESPluginPortal,
+                              BESAdmin), legacy vendor branding (IBM
+                              Endpoint Manager, Tivoli Endpoint Manager),
+                              and utility processes (qna, xqna,
+                              XBESClientUI, XOpenUI) from all discovery
+                              arrays and patterns.
         3.0.0 - 2026-04-20 - CAR parameterization refactor. Switches to
                               positional string params (RunMode,
                               CleanupOnly, UseBESRemoveIfFound) consumable
@@ -186,7 +205,7 @@ $UseBESRemoveBool = ConvertTo-CarBool $UseBESRemoveIfFound
 # RUNTIME BANNER
 # ---------------------------------------------------------------------------
 Clear-Host
-$ScriptVersion  = '3.0.0'
+$ScriptVersion  = '3.1.0'
 $Stopwatch      = [System.Diagnostics.Stopwatch]::StartNew()
 $StartTimestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 $ScriptHost     = $env:COMPUTERNAME
@@ -263,19 +282,9 @@ function Save-Log {
 $BigFixNamePatterns = @(
     'BigFix',
     'BES Client',
-    'BES Relay',
-    'BES Server',
-    'BES Root',
-    'BES FillDB',
-    'BES GatherDB',
-    'BESWebReports',
-    'BES Web Reports',
+    'BESClient',
     'BESRemove',
-    'BESAdmin',
-    'Client Deploy Tool',
     'BigFix Enterprise',
-    'IBM Endpoint Manager',
-    'Tivoli Endpoint Manager',
     'HCL BigFix'
 )
 
@@ -302,7 +311,7 @@ if ($IsEnforce) { $verb = 'Stopping' }
 Write-Host ('[Step 1/8] {0} BigFix services...' -f $verb) -ForegroundColor Green
 Write-Log ('[Step 1/8] Services - Mode: {0}' -f $Mode)
 
-$ServiceNamePatterns = @('^BES', '^BigFix', '^HCLBigFix', '^TivoliEndpoint')
+$ServiceNamePatterns = @('^BESClient$', '^besclient$', '^BigFix')
 
 function Get-ServiceSortKey {
     param([string]$Name)
@@ -368,9 +377,7 @@ Write-Host ('[Step 2/8] {0} BigFix processes...' -f $verb) -ForegroundColor Gree
 Write-Log ('[Step 2/8] Processes - Mode: {0}' -f $Mode)
 
 $ProcessPatterns = @(
-    '^BESClient$', '^BESRelay$', '^BESRootServer$', '^BESFillDB$',
-    '^BESGatherDB?$', '^BESWebReports', '^BESAdmin$', '^BESPluginPortal$',
-    '^qna$', '^xqna$', '^XBESClientUI$', '^XOpenUI$'
+    '^BESClient$'
 )
 
 function Stop-BigFixProcesses {
@@ -588,12 +595,9 @@ $PF86 = ${env:ProgramFiles(x86)}
 $DirsToCheck = @(
     ('{0}\BigFix Enterprise'  -f $env:ProgramFiles),
     ('{0}\BigFix Enterprise'  -f $PF86),
-    ('{0}\IBM\BigFix'         -f $env:ProgramFiles),
-    ('{0}\IBM\BigFix'         -f $PF86),
+    ('{0}\BigFix'             -f $env:ProgramData),
     ('{0}\HCL\BigFix'         -f $env:ProgramFiles),
     ('{0}\HCL\BigFix'         -f $PF86),
-    ('{0}\BigFix'             -f $env:ProgramData),
-    ('{0}\IBM\BigFix'         -f $env:ProgramData),
     ('{0}\HCL\BigFix'         -f $env:ProgramData),
     ('{0}\BES'                -f $env:TEMP),
     'C:\Windows\Temp\BES'
@@ -637,18 +641,9 @@ $RegKeysToCheck = @(
     'HKLM:\SOFTWARE\WOW6432Node\BigFix',
     'HKLM:\SOFTWARE\BigFix Enterprise',
     'HKLM:\SOFTWARE\WOW6432Node\BigFix Enterprise',
-    'HKLM:\SOFTWARE\IBM\BigFix',
-    'HKLM:\SOFTWARE\WOW6432Node\IBM\BigFix',
     'HKLM:\SOFTWARE\HCL\BigFix',
     'HKLM:\SOFTWARE\WOW6432Node\HCL\BigFix',
     'HKLM:\SYSTEM\CurrentControlSet\Services\BESClient',
-    'HKLM:\SYSTEM\CurrentControlSet\Services\BESRelay',
-    'HKLM:\SYSTEM\CurrentControlSet\Services\BESRootServer',
-    'HKLM:\SYSTEM\CurrentControlSet\Services\BESFillDB',
-    'HKLM:\SYSTEM\CurrentControlSet\Services\BESGatherDB',
-    'HKLM:\SYSTEM\CurrentControlSet\Services\BESWebReportsServer',
-    'HKLM:\SYSTEM\CurrentControlSet\Services\BESWebUI',
-    'HKLM:\SYSTEM\CurrentControlSet\Services\BESPluginPortal',
     'HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Application\BESClient',
     'HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Application\BigFix'
 )
@@ -685,7 +680,7 @@ if ($CountKeysFound -eq 0) { Write-Log 'No BigFix registry keys found.' -Level '
 # ---------------------------------------------------------------------------
 # STEP 7 - SCHEDULED TASKS
 # ---------------------------------------------------------------------------
-$TaskPatterns = @('BigFix', 'BESClient', 'BESRelay', 'IBM Endpoint', 'Tivoli Endpoint', 'HCL BigFix')
+$TaskPatterns = @('BigFix', 'BESClient', 'BES Client')
 
 Write-Host ''
 $verb = 'Scanning for'
@@ -724,7 +719,7 @@ if ($CountTasksFound -eq 0) { Write-Log 'No BigFix scheduled tasks found.' -Leve
 # ---------------------------------------------------------------------------
 # STEP 8 - FIREWALL RULES
 # ---------------------------------------------------------------------------
-$FwPatterns = @('BigFix', 'BESClient', 'BESRelay', 'BES Client', 'BES Relay', 'IBM Endpoint', 'HCL BigFix')
+$FwPatterns = @('BigFix', 'BESClient', 'BES Client')
 
 Write-Host ''
 $verb = 'Scanning for'

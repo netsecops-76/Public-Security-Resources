@@ -4,14 +4,20 @@
 # ==============================================================================
 # Author:    Brian Canaday
 # Team:      netsecops-76
-# Version:   3.0.0
+# Version:   3.1.0
 # Created:   2026-04-03
 #
 # Description:
-#   Audits or uninstalls Okta, ScaleFT, sftd, and Advanced Server Access
-#   (ASA) software on RHEL/CentOS/Rocky/Alma (RPM) and Debian/Ubuntu (DEB)
-#   Linux. Designed for unattended execution via Qualys Cloud Agent / CAR
-#   using UI-defined POSITIONAL parameters.
+#   Audits or uninstalls ScaleFT / sftd software on RHEL/CentOS/Rocky/Alma
+#   (RPM) and Debian/Ubuntu (DEB) Linux. Designed for unattended execution
+#   via Qualys Cloud Agent / CAR using UI-defined POSITIONAL parameters.
+#
+#   Target software (exclusively):
+#       ScaleFT, scaleft-server-tools, scaleft-client-tools, sftd
+#
+#   NOTE: This script targets ONLY the four products listed above. Other
+#   Okta products (Okta LDAP Agent, Okta AD Agent, Okta RADIUS Agent,
+#   OktaASA, Advanced Server Access, etc.) are intentionally excluded.
 #
 #   Audit-first: nothing changes unless RunMode=Enforce.
 #
@@ -78,6 +84,14 @@
 #   2  = Must be run as root
 #
 # Changelog:
+#   3.1.0 - 2026-04-22 - Narrow target scope to ScaleFT /
+#                        scaleft-server-tools / scaleft-client-tools /
+#                        sftd ONLY. Removed all Okta*, OktaLDAPAgent,
+#                        okta-ldap-agent, okta-ad-agent, okta-radius-agent,
+#                        okta-asa, Advanced Server Access, and scaleleft
+#                        patterns from every discovery array, regex,
+#                        filesystem path, service file list, ld.so conf
+#                        list, and cron file list.
 #   3.0.0 - 2026-04-20 - CAR parameterization refactor. Replaces named
 #                        flags with POSITIONAL string parameters (RunMode,
 #                        CleanupOnly, PackagesOnly) consumable by Qualys
@@ -198,7 +212,7 @@ run_silent() {
 # ------------------------------------------------------------------------------
 clear || true
 echo "================================================================"
-echo "  remove-okta.sh  v3.0.0"
+echo "  remove-okta.sh  v3.1.0"
 echo "  Host         : $(hostname -f 2>/dev/null || hostname)"
 echo "  Started      : $(date '+%Y-%m-%d %H:%M:%S')"
 echo "  Log          : ${LOG_FILE}"
@@ -215,7 +229,7 @@ if [ "${UNINSTALL}" -eq 0 ]; then
 fi
 echo ""
 
-log "remove-okta.sh v3.0.0 started | RunMode=${RUN_MODE} | Mode=${MODE_LABEL} | CleanupOnly=${CLEANUP_ONLY_STR} | PackagesOnly=${PACKAGES_ONLY_STR}"
+log "remove-okta.sh v3.1.0 started | RunMode=${RUN_MODE} | Mode=${MODE_LABEL} | CleanupOnly=${CLEANUP_ONLY_STR} | PackagesOnly=${PACKAGES_ONLY_STR}"
 
 # ------------------------------------------------------------------------------
 # ENVIRONMENT DETECTION
@@ -239,7 +253,7 @@ log "Environment: RPM=${HAS_RPM} DEB=${HAS_DEB} DNF=${HAS_DNF} YUM=${HAS_YUM} ZY
 # ------------------------------------------------------------------------------
 # MATCH PATTERN
 # ------------------------------------------------------------------------------
-MATCH_REGEX='(okta|scaleft|scaleleft|sftd|(^|[-_.])sft([-_.]|$)|advanced[-_.]?server[-_.]?access|OktaLDAPAgent)'
+MATCH_REGEX='(scaleft|sftd|(^|[-_.])sft([-_.]|$))'
 
 # ------------------------------------------------------------------------------
 # SERVICE HELPERS
@@ -304,12 +318,6 @@ if [ "${PACKAGES_ONLY}" -eq 0 ] || [ "${UNINSTALL}" -eq 0 ]; then
         sftd
         scaleft-server-tools
         scaleft-client-tools
-        OktaLDAPAgent
-        okta-ldap-agent
-        okta-ad-agent
-        okta-radius-agent
-        okta-asa
-        okta-advanced-server-access
     )
 
     for svc in "${EXPLICIT_SERVICES[@]}"; do
@@ -414,7 +422,7 @@ fi
 discover_rpm_packages() {
     if [ "${HAS_RPM}" -eq 0 ]; then echo ""; return; fi
     rpm -qa 2>/dev/null | grep -Ei "${MATCH_REGEX}" | sort -u
-    for pkg in OktaLDAPAgent scaleft-server-tools scaleft-client-tools sftd; do
+    for pkg in scaleft-server-tools scaleft-client-tools sftd; do
         if rpm -q "${pkg}" >/dev/null 2>&1; then
             echo "${pkg}"
         fi
@@ -465,14 +473,8 @@ process_rpm_packages() {
         local ordered_patterns=(
             "scaleft-server"
             "scaleft-client"
-            "OktaLDAPAgent"
-            "okta-ldap"
-            "okta-radius"
-            "okta-ad"
             "sftd"
-            "okta"
             "scaleft"
-            "scaleleft"
         )
 
         local removed_list=""
@@ -504,7 +506,7 @@ ${pkg}"
 discover_deb_packages() {
     if [ "${HAS_DEB}" -eq 0 ]; then echo ""; return; fi
     dpkg-query -W -f='${binary:Package}\n' 2>/dev/null | grep -Ei "${MATCH_REGEX}" | sort -u
-    for pkg in OktaLDAPAgent scaleft-server-tools scaleft-client-tools sftd; do
+    for pkg in scaleft-server-tools scaleft-client-tools sftd; do
         if dpkg-query -l "${pkg}" >/dev/null 2>&1; then
             echo "${pkg}"
         fi
@@ -554,13 +556,8 @@ process_deb_packages() {
         local ordered_patterns=(
             "scaleft-server"
             "scaleft-client"
-            "okta-ldap"
-            "okta-radius"
-            "okta-ad"
             "sftd"
-            "okta"
             "scaleft"
-            "scaleleft"
         )
 
         local removed_list=""
@@ -614,19 +611,6 @@ fi
 
 if [ "${PACKAGES_ONLY}" -eq 0 ] || [ "${UNINSTALL}" -eq 0 ]; then
     OKTA_DIRS=(
-        /opt/Okta
-        /opt/okta
-        /opt/OktaLDAPAgent
-        /opt/OktaProvisioningAgent
-        /opt/OktaADAgent
-        /opt/OktaRadiusAgent
-        /etc/okta
-        /etc/Okta
-        /var/lib/okta
-        /var/lib/Okta
-        /var/log/okta
-        /var/log/Okta
-        /var/cache/okta
         /opt/scaleft
         /opt/ScaleFT
         /etc/scaleft
@@ -648,8 +632,6 @@ if [ "${PACKAGES_ONLY}" -eq 0 ] || [ "${UNINSTALL}" -eq 0 ]; then
         /usr/local/bin/sft
         /root/.sft
         /root/.scaleft
-        /root/.okta
-        /tmp/okta
         /tmp/scaleft
         /tmp/sftd
     )
@@ -657,8 +639,6 @@ if [ "${PACKAGES_ONLY}" -eq 0 ] || [ "${UNINSTALL}" -eq 0 ]; then
     OKTA_LOG_FILES=(
         /var/log/sftd.log
         /var/log/scaleft.log
-        /var/log/okta-ldap-agent.log
-        /var/log/okta-radius-agent.log
     )
 
     for dir in "${OKTA_DIRS[@]}"; do
@@ -719,27 +699,17 @@ if [ "${PACKAGES_ONLY}" -eq 0 ] || [ "${UNINSTALL}" -eq 0 ]; then
         /etc/init.d/sftd
         /etc/init.d/scaleft-server-tools
         /etc/init.d/scaleft-client-tools
-        /etc/init.d/OktaLDAPAgent
-        /etc/init.d/okta-ldap-agent
-        /etc/init.d/okta-radius-agent
         /usr/lib/systemd/system/sftd.service
         /usr/lib/systemd/system/scaleft-server-tools.service
         /usr/lib/systemd/system/scaleft-client-tools.service
-        /usr/lib/systemd/system/okta-ldap-agent.service
-        /usr/lib/systemd/system/okta-radius-agent.service
-        /usr/lib/systemd/system/okta-asa.service
         /etc/systemd/system/sftd.service
         /etc/systemd/system/scaleft-server-tools.service
         /etc/systemd/system/scaleft-client-tools.service
-        /etc/systemd/system/okta-ldap-agent.service
-        /etc/systemd/system/okta-asa.service
     )
 
     OKTA_LD_CONF_FILES=(
         /etc/ld.so.conf.d/scaleft.conf
         /etc/ld.so.conf.d/sftd.conf
-        /etc/ld.so.conf.d/okta.conf
-        /etc/ld.so.conf.d/okta-asa.conf
     )
 
     LD_CHANGED=0
@@ -804,13 +774,8 @@ fi
 
 if [ "${PACKAGES_ONLY}" -eq 0 ] || [ "${UNINSTALL}" -eq 0 ]; then
     OKTA_CRON_FILES=(
-        /etc/cron.d/okta
-        /etc/cron.d/Okta
         /etc/cron.d/sftd
         /etc/cron.d/scaleft
-        /etc/cron.d/OktaLDAPAgent
-        /etc/cron.d/okta-ldap-agent
-        /etc/cron.d/okta-radius-agent
     )
 
     CRON_FOUND=0

@@ -1,18 +1,25 @@
 <#
 .SYNOPSIS
-    Audits or removes Okta, ScaleFT, and Advanced Server Access (ASA/sftd)
-    software and all associated artifacts from a Windows host. Deployed via
-    Qualys CAR using UI-defined POSITIONAL parameters.
+    Audits or removes ScaleFT / sftd software and all associated artifacts
+    from a Windows host. Deployed via Qualys CAR using UI-defined POSITIONAL
+    parameters.
+
+    Target software (exclusively):
+        ScaleFT, scaleft-server-tools, scaleft-client-tools, sftd
 
 .DESCRIPTION
-    Audit-first. By default, the script discovers and reports all Okta/
-    ScaleFT services, processes, installed products, filesystem artifacts,
-    registry keys, scheduled tasks, and firewall rules - with no changes
-    made to the system.
+    Audit-first. By default, the script discovers and reports ScaleFT/sftd
+    services, processes, installed products, filesystem artifacts, registry
+    keys, scheduled tasks, and firewall rules - with no changes made to the
+    system.
 
     RunMode=Enforce performs the full uninstall workflow: stops services,
     kills processes, uninstalls registered products, removes leftover
     directories, registry keys, scheduled tasks, and firewall rules.
+
+    NOTE: This script targets ONLY the four products listed above. Other
+    Okta products (Okta Verify, Okta LDAP Agent, Okta AD Agent, OktaASA,
+    Okta Browser Plugin, etc.) are intentionally excluded.
 
 # ==============================================================================
 # CAR UI PARAMETERS (define on Script Details page in this EXACT order):
@@ -80,11 +87,20 @@
 .NOTES
     Author:      Brian Canaday
     Team:        netsecops-76
-    Version:     3.0.0
+    Version:     3.1.0
     Created:     2026-04-03
     Script:      Remove-Okta.ps1
 
     Changelog:
+        3.1.0 - 2026-04-22 - Narrow target scope to ScaleFT /
+                              scaleft-server-tools / scaleft-client-tools /
+                              sftd ONLY. Removed all Okta*, OktaVerify,
+                              OktaLDAP, OktaAD, OktaRADIUS, ASA, Advanced
+                              Server Access, scaleleft (typo alias), and
+                              OktaBrowserPlugin patterns from every
+                              discovery array, regex, filesystem path,
+                              registry key, scheduled-task pattern, and
+                              firewall-rule pattern.
         3.0.0 - 2026-04-20 - CAR parameterization refactor. Replaces -U /
                               -CleanupOnly / -IncludeCurrentUser switches
                               with positional string parameters consumable
@@ -178,7 +194,7 @@ $IncludeCurrentUserBool   = ConvertTo-CarBool $IncludeCurrentUser
 # RUNTIME BANNER
 # ---------------------------------------------------------------------------
 Clear-Host
-$ScriptVersion  = '3.0.0'
+$ScriptVersion  = '3.1.0'
 $Stopwatch      = [System.Diagnostics.Stopwatch]::StartNew()
 $StartTimestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 $ScriptHost     = $env:COMPUTERNAME
@@ -260,28 +276,13 @@ function Save-Log {
 # VENDOR PATTERN MATCHING
 # ---------------------------------------------------------------------------
 $VendorNamePatterns = @(
-    'Okta',
     'ScaleFT',
-    'scaleleft',
-    'sftd',
-    'Advanced Server Access',
-    'Okta Verify',
-    'Okta LDAP',
-    'Okta AD Agent',
-    'Okta RADIUS',
-    'Okta Provisioning',
-    'Okta On-Prem',
-    'Okta RSA',
-    'Okta Device Trust',
-    'Okta Browser Plugin',
-    'Okta SAML Toolkit',
-    'Okta IWA',
-    'Okta Workflows',
-    'ASA Agent',
-    'Advanced Server Access Agent'
+    'scaleft-server-tools',
+    'scaleft-client-tools',
+    'sftd'
 )
 
-$VendorPathRegex = '(?i)(okta|scaleft|scaleleft|sftd|\\sft\\|advanced.server.access)'
+$VendorPathRegex = '(?i)(scaleft|sftd|\\sft\\)'
 
 function Test-IsVendorMatch {
     param([string]$Text)
@@ -312,20 +313,11 @@ if (-not $AuditOnly) { $verb = 'Stopping and removing' }
 Write-Log ('[Step 1/8] {0} Okta/ScaleFT services' -f $verb)
 
 $ExplicitServiceNames = @(
-    'OktaLDAPAgent',
-    'OktaADAgent',
-    'OktaRADIUSAgent',
-    'OktaProvisioningAgent',
-    'OktaIWAServer',
-    'OktaVerify',
-    'OktaDeviceTrust',
     'sftd',
     'scaleft-server-tools',
     'scaleft-client-tools',
     'ScaleFTServer',
-    'ScaleFTClient',
-    'OktaASA',
-    'OktaBrowserPlugin'
+    'ScaleFTClient'
 )
 
 function Stop-And-DeleteService {
@@ -387,13 +379,9 @@ if (-not $AuditOnly) { $verb = 'Killing' }
 Write-Log ('[Step 2/8] {0} Okta/ScaleFT processes' -f $verb)
 
 $ProcessPatterns = @(
-    '(?i)^okta',
     '(?i)^sftd$',
     '(?i)^scaleft',
-    '(?i)^sft-',
-    '(?i)^OktaVerify',
-    '(?i)^OktaBrowserPlugin',
-    '(?i)^OktaIWA'
+    '(?i)^sft-'
 )
 
 function Find-VendorProcesses {
@@ -624,27 +612,13 @@ Write-Log ('[Step 5/8] {0} filesystem artifacts' -f $verb)
 $PF86 = ${env:ProgramFiles(x86)}
 
 $DirsToRemove = @(
-    ('{0}\Okta'                                   -f $env:ProgramFiles),
-    ('{0}\Okta'                                   -f $PF86),
-    ('{0}\Okta'                                   -f $env:ProgramData),
-    ('{0}\Okta\Okta LDAP Agent'                   -f $PF86),
-    ('{0}\Okta\Okta AD Agent'                     -f $PF86),
-    ('{0}\Okta\Okta RADIUS Agent'                 -f $PF86),
-    ('{0}\Okta\On-Premises Provisioning Agent'    -f $PF86),
-    ('{0}\Okta\On-Prem MFA'                       -f $PF86),
-    ('{0}\Okta\Okta RSA SecurID Agent'            -f $PF86),
     ('{0}\ScaleFT'                                -f $env:ProgramFiles),
     ('{0}\ScaleFT'                                -f $PF86),
     ('{0}\ScaleFT'                                -f $env:ProgramData),
-    ('{0}\Okta\ASA'                               -f $env:ProgramFiles),
-    ('{0}\Okta\ASA'                               -f $PF86),
     'C:\Windows\System32\config\systemprofile\AppData\Local\scaleft',
     'C:\Windows\SysWOW64\config\systemprofile\AppData\Local\scaleft',
-    ('{0}\Okta'    -f $env:LocalAppData),
-    ('{0}\Okta'    -f $env:AppData),
     ('{0}\ScaleFT' -f $env:LocalAppData),
     ('{0}\ScaleFT' -f $env:AppData),
-    ('{0}\okta'    -f $env:TEMP),
     ('{0}\scaleft' -f $env:TEMP)
 )
 
@@ -684,26 +658,13 @@ if (-not $AuditOnly) { $verb = 'Removing' }
 Write-Log ('[Step 6/8] {0} registry keys' -f $verb)
 
 $RegKeysToRemove = @(
-    'HKLM:\SOFTWARE\Okta',
-    'HKLM:\SOFTWARE\WOW6432Node\Okta',
-    'HKCU:\SOFTWARE\Okta',
     'HKLM:\SOFTWARE\ScaleFT',
     'HKLM:\SOFTWARE\WOW6432Node\ScaleFT',
     'HKCU:\SOFTWARE\ScaleFT',
-    'HKLM:\SYSTEM\CurrentControlSet\Services\OktaLDAPAgent',
-    'HKLM:\SYSTEM\CurrentControlSet\Services\OktaADAgent',
-    'HKLM:\SYSTEM\CurrentControlSet\Services\OktaRADIUSAgent',
-    'HKLM:\SYSTEM\CurrentControlSet\Services\OktaProvisioningAgent',
-    'HKLM:\SYSTEM\CurrentControlSet\Services\OktaIWAServer',
-    'HKLM:\SYSTEM\CurrentControlSet\Services\OktaVerify',
     'HKLM:\SYSTEM\CurrentControlSet\Services\sftd',
     'HKLM:\SYSTEM\CurrentControlSet\Services\scaleft-server-tools',
     'HKLM:\SYSTEM\CurrentControlSet\Services\scaleft-client-tools',
-    'HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Application\OktaLDAPAgent',
-    'HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Application\OktaADAgent',
-    'HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Application\sftd',
-    'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run\OktaVerify',
-    'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run\OktaVerify'
+    'HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Application\sftd'
 )
 
 foreach ($regKey in $RegKeysToRemove) {
@@ -773,7 +734,7 @@ $verb = 'Discovering'
 if (-not $AuditOnly) { $verb = 'Removing' }
 Write-Log ('[Step 7/8] {0} scheduled tasks' -f $verb)
 
-$TaskPatterns = @('Okta', 'ScaleFT', 'scaleleft', 'sftd', 'OktaVerify', 'OktaLDAP', 'Advanced Server Access')
+$TaskPatterns = @('ScaleFT', 'sftd', 'scaleft-server-tools', 'scaleft-client-tools')
 $allTasks     = Get-ScheduledTask -ErrorAction SilentlyContinue
 
 foreach ($task in $allTasks) {
@@ -816,7 +777,7 @@ $verb = 'Discovering'
 if (-not $AuditOnly) { $verb = 'Removing' }
 Write-Log ('[Step 8/8] {0} firewall rules' -f $verb)
 
-$FwPatterns = @('Okta', 'ScaleFT', 'sftd', 'ASA Agent', 'OktaVerify', 'Advanced Server Access')
+$FwPatterns = @('ScaleFT', 'sftd', 'scaleft-server-tools', 'scaleft-client-tools')
 
 try {
     $allRules = Get-NetFirewallRule -ErrorAction SilentlyContinue

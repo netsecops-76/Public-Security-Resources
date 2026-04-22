@@ -18,10 +18,10 @@ UI-defined **positional parameters** you configure on the Script Details page.
 | [`linux/assessment/get-database-inventory.sh`](linux/assessment/get-database-inventory.sh) | Linux | Inventory installed databases, ports, auth config, catalogs | 3.0.0 | 9 | Read-only assessment |
 | [`windows/remediation/Create_Admin.ps1`](windows/remediation/Create_Admin.ps1) | Windows | Create / repair / remove a local Administrator account | 3.0.1 | 3 | Create or Remove |
 | [`linux/remediation/Create_Admin.sh`](linux/remediation/Create_Admin.sh) | Linux | Create / repair / remove a local admin with RSA or password auth | 3.0.1 | 4 | Create or Remove |
-| [`windows/remediation/Remove-BigFix.ps1`](windows/remediation/Remove-BigFix.ps1) | Windows | Audit / uninstall the IBM-HCL BigFix client and artifacts | 3.0.0 | 3 | Audit or Enforce |
-| [`linux/remediation/remove-bigfix.sh`](linux/remediation/remove-bigfix.sh) | Linux | Audit / uninstall BigFix on RPM + DEB distros | 3.0.0 | 4 | Audit or Enforce |
-| [`windows/remediation/Remove-Okta.ps1`](windows/remediation/Remove-Okta.ps1) | Windows | Audit / uninstall Okta / ScaleFT / ASA and artifacts | 3.0.0 | 3 | Audit or Enforce |
-| [`linux/remediation/remove-okta.sh`](linux/remediation/remove-okta.sh) | Linux | Audit / uninstall Okta / ScaleFT / sftd / ASA on RPM + DEB | 3.0.0 | 3 | Audit or Enforce |
+| [`windows/remediation/Remove-BigFix.ps1`](windows/remediation/Remove-BigFix.ps1) | Windows | Audit / uninstall the BigFix / BESClient agent | 3.1.0 | 3 | Audit or Enforce |
+| [`linux/remediation/remove-bigfix.sh`](linux/remediation/remove-bigfix.sh) | Linux | Audit / uninstall the BigFix / BESClient agent on RPM + DEB | 3.1.0 | 4 | Audit or Enforce |
+| [`windows/remediation/Remove-Okta.ps1`](windows/remediation/Remove-Okta.ps1) | Windows | Audit / uninstall ScaleFT / sftd and artifacts | 3.1.0 | 3 | Audit or Enforce |
+| [`linux/remediation/remove-okta.sh`](linux/remediation/remove-okta.sh) | Linux | Audit / uninstall ScaleFT / sftd on RPM + DEB | 3.1.0 | 3 | Audit or Enforce |
 
 ### At-a-glance: what each script's positional parameters are
 
