@@ -4,7 +4,7 @@
 # ==============================================================================
 # Author:    Brian Canaday
 # Team:      netsecops-76
-# Version:   3.0.0
+# Version:   3.0.1
 # Created:   2026-04-20
 #
 # Description:
@@ -129,6 +129,18 @@
 #   2  = Fatal error / must be run as root / invalid parameters
 #
 # Changelog:
+#   3.0.1 - 2026-04-21 - Mode 2 session-termination: SIGTERM -> SIGKILL
+#                        escalation is the routine fallback by design, not
+#                        a failure. Downgrade that log line from [WARN]
+#                        to [INFO] so a successful cleanup doesn't bump
+#                        the warning counter (which otherwise trips exit
+#                        code 1 on an otherwise clean run). Final summary
+#                        now reports whether SIGTERM was sufficient or
+#                        SIGKILL escalation was required. The genuine
+#                        error path (SIGKILL itself fails, processes
+#                        survive) remains [ERROR] and still exits 2.
+#                        Matches the equivalent fix in Create_Admin.ps1
+#                        v3.0.1.
 #   3.0.0 - 2026-04-20 - CAR parameterization refactor. Replaces the
 #                        hard-coded ENVIRONMENT block with POSITIONAL
 #                        args consumable by Qualys CAR UI parameters.
@@ -166,7 +178,7 @@ RUN_MODE="${4:-${RUN_MODE:-1}}"
 
 # -------- globals / state --------
 SCRIPT_NAME="Create_Admin.sh"
-SCRIPT_VERSION="3.0.0"
+SCRIPT_VERSION="3.0.1"
 STAMP="$(date '+%Y%m%d_%H%M%S')"
 HOSTNAME_LOCAL="$(hostname 2>/dev/null || echo unknown)"
 STARTED_AT="$(date '+%Y-%m-%dT%H:%M:%S%z')"
@@ -610,6 +622,8 @@ terminate_user_sessions() {
         log_skip "No active processes owned by '${USERNAME}'."
         return 0
     fi
+    local initial_count
+    initial_count="$(printf '%s\n' "${pids}" | awk 'NF' | wc -l | tr -d ' ')"
     log "Terminating processes owned by '${USERNAME}': $(printf '%s' "${pids}" | tr '\n' ' ')"
 
     # Polite first: SIGTERM
@@ -620,17 +634,31 @@ terminate_user_sessions() {
         sleep 1
         pgrep -u "${USERNAME}" >/dev/null 2>&1 || break
     done
-    # Forceful if any remain
+
+    # Forceful escalation if any remain. This is the routine fallback - not a
+    # failure condition. Log at INFO so a successful cleanup doesn't bump the
+    # warning counter (which would trip exit code 1 on an otherwise clean run).
+    local escalated=0
     if pgrep -u "${USERNAME}" >/dev/null 2>&1; then
-        log_warn "Processes for '${USERNAME}' still present after SIGTERM - sending SIGKILL."
+        local stuck
+        stuck="$(pgrep -u "${USERNAME}" 2>/dev/null | wc -l | tr -d ' ')"
+        log "Processes for '${USERNAME}' still present after SIGTERM (${stuck} remaining) - escalating to SIGKILL."
         pkill -KILL -u "${USERNAME}" 2>/dev/null || true
         sleep 1
+        escalated=1
     fi
+
+    # If SIGKILL also failed, this is a real error (uninterruptible or defunct).
     if pgrep -u "${USERNAME}" >/dev/null 2>&1; then
         log_err "Could not terminate all processes owned by '${USERNAME}'; userdel will likely fail."
         return 1
     fi
-    log_ok "All processes for '${USERNAME}' terminated."
+
+    if [ "${escalated}" -eq 1 ]; then
+        log_ok "All processes for '${USERNAME}' terminated (${initial_count} signalled; SIGKILL escalation was required)."
+    else
+        log_ok "All processes for '${USERNAME}' terminated (${initial_count} signalled; SIGTERM was sufficient)."
+    fi
 }
 
 remove_user() {

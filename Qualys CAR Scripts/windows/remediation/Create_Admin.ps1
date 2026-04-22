@@ -103,11 +103,21 @@
 .NOTES
     Author:      Brian Canaday
     Team:        netsecops-76
-    Version:     3.0.0
+    Version:     3.0.1
     Created:     2026-04-20
     Script:      Create_Admin.ps1
 
     Changelog:
+        3.0.1 - 2026-04-21 - Mode 2 process-kill: catch the specific
+                              ProcessCommandException thrown when a PID
+                              has already exited between the Win32_Process
+                              enumeration and the Stop-Process call, and
+                              log it at [--] (skip) level without bumping
+                              the warning counter. A clean Mode 2 run now
+                              exits 0 instead of 1 when processes
+                              self-terminate during session teardown.
+                              Adds a summary line when any "already gone"
+                              PIDs are observed.
         3.0.0 - 2026-04-20 - CAR parameterization refactor. Replaces the
                               hard-coded ENVIRONMENT block with a POSITIONAL
                               param() block consumable by Qualys CAR UI
@@ -173,7 +183,7 @@ $RunModeNum = [int]$RunMode
 
 # -------- globals / state --------
 $ScriptName    = 'Create_Admin.ps1'
-$ScriptVersion = '3.0.0'
+$ScriptVersion = '3.0.1'
 $StartedAt     = Get-Date
 $HostName      = $env:COMPUTERNAME
 
@@ -324,9 +334,28 @@ function Invoke-Remove {
         }
         if ($ownedPids.Count -gt 0) {
             Write-Log ("Killing {0} process(es) owned by '{1}'." -f $ownedPids.Count, $Username) -Level 'INFO'
+            $killedCount = 0
+            $goneCount   = 0
             foreach ($pid_ in $ownedPids) {
-                try { Stop-Process -Id $pid_ -Force -ErrorAction Stop }
-                catch { Add-Warning ('Failed to kill pid {0}: {1}' -f $pid_, $_.Exception.Message) }
+                try {
+                    Stop-Process -Id $pid_ -Force -ErrorAction Stop
+                    $killedCount++
+                }
+                catch [Microsoft.PowerShell.Commands.ProcessCommandException] {
+                    # Race: the process exited between Win32_Process enumeration
+                    # and Stop-Process. Session teardown often cascades and kills
+                    # child processes before our loop reaches them. This is
+                    # success, not failure - log at SKIP level without bumping
+                    # the warning counter.
+                    Write-Log ('Process {0} already gone (exited on its own).' -f $pid_) -Level '--'
+                    $goneCount++
+                }
+                catch {
+                    Add-Warning ('Failed to kill pid {0}: {1}' -f $pid_, $_.Exception.Message)
+                }
+            }
+            if ($goneCount -gt 0) {
+                Write-Log ("Summary: {0} killed, {1} exited on their own during teardown." -f $killedCount, $goneCount) -Level '--'
             }
         } else {
             Write-Log "No active processes owned by '$Username'." -Level '--'
