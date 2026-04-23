@@ -327,7 +327,7 @@ function Invoke-Remove {
         return
     }
 
-    Write-Log "WARNING: Mode 2 will remove user '$Username' and kill its active processes." -Level 'WARN'
+    Write-Log "Mode 2: removing user '$Username' and killing its active processes." -Level 'INFO'
     Write-Log "Profile directory under C:\Users\ will be LEFT IN PLACE." -Level 'INFO'
 
     # 1. Kill all processes owned by the user

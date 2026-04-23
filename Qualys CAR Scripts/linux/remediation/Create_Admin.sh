@@ -686,7 +686,7 @@ remove_user() {
         return 0
     fi
 
-    log_warn "Mode 2: removing user '${USERNAME}' from ${HOSTNAME_LOCAL}. This kills active sessions and deletes the home directory."
+    log "Mode 2: removing user '${USERNAME}' from ${HOSTNAME_LOCAL}. This kills active sessions and deletes the home directory."
 
     terminate_user_sessions || true
 
