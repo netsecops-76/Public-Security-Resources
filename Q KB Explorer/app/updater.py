@@ -147,38 +147,29 @@ def apply_update() -> dict:
             raise RuntimeError(f"Unexpected tarball structure: {entries}")
         source_dir = os.path.join(extract_dir, entries[0])
 
-        # Step 4: Navigate into the project subdirectory
-        # The tarball extracts as: Public-Security-Resources-Q-KB-Explorer/Q KB Explorer/app/
-        # We need to find the subdirectory containing app/
+        # Step 4: Copy app/ files
+        # The public repo has app/ nested under "Q KB Explorer/" subdirectory.
+        # Check both locations for compatibility.
         src_app = os.path.join(source_dir, "app")
-        project_dir = source_dir
         if not os.path.isdir(src_app):
-            # Look for app/ inside a subdirectory (e.g. "Q KB Explorer/app/")
-            for entry in os.listdir(source_dir):
-                candidate = os.path.join(source_dir, entry, "app")
-                if os.path.isdir(candidate):
-                    project_dir = os.path.join(source_dir, entry)
-                    src_app = candidate
-                    logger.info("[Updater] Found app/ in subdirectory: %s", entry)
-                    break
-            else:
-                raise RuntimeError(
-                    f"No app/ directory found in update. "
-                    f"Top-level contents: {os.listdir(source_dir)}"
-                )
-
+            # Try nested path (Public-Security-Resources structure)
+            src_app = os.path.join(source_dir, "Q KB Explorer", "app")
         dst_app = os.path.join(APP_DIR, "app")
+        if not os.path.isdir(src_app):
+            raise RuntimeError(f"No app/ directory found in update. Checked: {os.listdir(source_dir)}")
+
         logger.info("[Updater] Applying update: %s → %s", src_app, dst_app)
         # Remove old app dir and replace with new
         shutil.rmtree(dst_app)
         shutil.copytree(src_app, dst_app)
 
-        # Also copy root-level files if present (requirements.txt, Dockerfile, etc.)
-        for root_file in ("requirements.txt", "Dockerfile", "docker-compose.yml", "entrypoint.sh"):
-            src_file = os.path.join(project_dir, root_file)
-            dst_file = os.path.join(APP_DIR, root_file)
-            if os.path.exists(src_file):
-                shutil.copy2(src_file, dst_file)
+        # Also copy requirements.txt if present (check both root and nested path)
+        src_reqs = os.path.join(source_dir, "requirements.txt")
+        if not os.path.exists(src_reqs):
+            src_reqs = os.path.join(source_dir, "Q KB Explorer", "requirements.txt")
+        dst_reqs = os.path.join(APP_DIR, "requirements.txt")
+        if os.path.exists(src_reqs):
+            shutil.copy2(src_reqs, dst_reqs)
 
         # Step 5: Install new requirements (if any changed)
         logger.info("[Updater] Installing dependencies...")

@@ -1,6 +1,6 @@
 version: 2
 updates:
-  # GitHub Actions — always included per policy
+  # ── GitHub Actions (always include) ──
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
@@ -10,7 +10,31 @@ updates:
       prefix: "ci"
     assignees: ["netsecops-76"]
     labels: ["dependencies"]
-    open-pull-requests-limit: 3
     groups:
       github-actions:
         patterns: ["*"]
+
+  # ── Python (pip) ──
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    commit-message:
+      prefix: "deps"
+    assignees: ["netsecops-76"]
+    labels: ["dependencies"]
+    groups:
+      python-deps:
+        patterns: ["*"]
+
+  # ── Docker ──
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    commit-message:
+      prefix: "deps"
+    assignees: ["netsecops-76"]
+    labels: ["dependencies"]

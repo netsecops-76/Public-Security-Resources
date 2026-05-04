@@ -1,0 +1,6 @@
+# Development-only deps. CI and contributors install both
+# requirements.txt + requirements-dev.txt; production images install
+# only requirements.txt so pytest etc. don't ship to runtime.
+-r requirements.txt
+
+pytest>=9.0.3
