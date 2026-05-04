@@ -22,6 +22,17 @@
     },
     {
       "action": "copy_file",
+      "src": "entrypoint.sh",
+      "dst": "entrypoint.sh",
+      "comment": "Update entrypoint with self-heal logic for next restart"
+    },
+    {
+      "action": "run_command",
+      "cmd": "chmod +x /app/entrypoint.sh",
+      "comment": "Ensure entrypoint is executable after copy"
+    },
+    {
+      "action": "copy_file",
       "src": "update-manifest.json",
       "dst": "update-manifest.json",
       "comment": "Update the manifest itself for future updates"
@@ -34,7 +45,6 @@
   "skip_always": [
     "Dockerfile",
     "docker-compose.yml",
-    "entrypoint.sh",
     ".gitignore",
     "LICENSE"
   ]
