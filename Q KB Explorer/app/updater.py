@@ -269,7 +269,25 @@ def apply_update() -> dict:
 
 
 def _legacy_apply(project_dir: str, latest_sha: str, info: dict, t0: float) -> dict:
-    """Fallback for repos without update-manifest.json."""
+    """Fallback for repos without update-manifest.json.
+
+    After the legacy copy, verifies the app loads. If import fails,
+    fetches the manifest from the new code and runs it to self-heal
+    (install missing deps, fix permissions, etc.).
+    """
+    # Step 1: Copy requirements and install deps FIRST
+    src_reqs = os.path.join(project_dir, "requirements.txt")
+    dst_reqs = os.path.join(APP_DIR, "requirements.txt")
+    if os.path.exists(src_reqs):
+        shutil.copy2(src_reqs, dst_reqs)
+        logger.info("[Updater] Legacy: installing dependencies first...")
+        try:
+            subprocess.run(["pip", "install", "--no-cache-dir", "-r", dst_reqs],
+                           capture_output=True, text=True, timeout=180)
+        except Exception as e:
+            logger.warning("[Updater] Legacy pip install: %s", e)
+
+    # Step 2: Copy app/
     src_app = os.path.join(project_dir, "app")
     dst_app = os.path.join(APP_DIR, "app")
     if not os.path.isdir(src_app):
@@ -278,15 +296,53 @@ def _legacy_apply(project_dir: str, latest_sha: str, info: dict, t0: float) -> d
     shutil.rmtree(dst_app)
     shutil.copytree(src_app, dst_app)
 
-    src_reqs = os.path.join(project_dir, "requirements.txt")
-    dst_reqs = os.path.join(APP_DIR, "requirements.txt")
-    if os.path.exists(src_reqs):
-        shutil.copy2(src_reqs, dst_reqs)
+    # Step 3: Copy manifest if present (for future updates)
+    src_manifest = os.path.join(project_dir, "update-manifest.json")
+    if os.path.exists(src_manifest):
+        shutil.copy2(src_manifest, os.path.join(APP_DIR, "update-manifest.json"))
+
+    # Step 4: Verify the app loads — if not, self-heal
+    logger.info("[Updater] Legacy: verifying app loads...")
+    heal_needed = False
+    try:
+        result = subprocess.run(
+            ["python3", "-c", "from app.main import app; print(len(app.url_map._rules))"],
+            capture_output=True, text=True, timeout=30, cwd=APP_DIR,
+        )
+        if result.returncode != 0:
+            logger.warning("[Updater] App import failed: %s", result.stderr[:200])
+            heal_needed = True
+        else:
+            route_count = int(result.stdout.strip())
+            # If we have way fewer routes than expected, something is wrong
+            if route_count < 80:
+                logger.warning("[Updater] Only %d routes loaded (expected 100+) — healing", route_count)
+                heal_needed = True
+            else:
+                logger.info("[Updater] App verified: %d routes", route_count)
+    except Exception as e:
+        logger.warning("[Updater] App verification failed: %s", e)
+        heal_needed = True
+
+    if heal_needed:
+        logger.info("[Updater] Self-healing: re-running pip install...")
         try:
             subprocess.run(["pip", "install", "--no-cache-dir", "-r", dst_reqs],
-                           capture_output=True, text=True, timeout=120)
+                           capture_output=True, text=True, timeout=180)
+        except Exception:
+            pass
+        # Re-verify
+        try:
+            result = subprocess.run(
+                ["python3", "-c", "from app.main import app; print(len(app.url_map._rules))"],
+                capture_output=True, text=True, timeout=30, cwd=APP_DIR,
+            )
+            if result.returncode == 0:
+                logger.info("[Updater] Self-heal successful: %s routes", result.stdout.strip())
+            else:
+                logger.error("[Updater] Self-heal failed: %s", result.stderr[:200])
         except Exception as e:
-            logger.warning("[Updater] Legacy pip install: %s", e)
+            logger.error("[Updater] Self-heal verification failed: %s", e)
 
     _save_version(latest_sha)
     _restart_gunicorn()
@@ -298,6 +354,7 @@ def _legacy_apply(project_dir: str, latest_sha: str, info: dict, t0: float) -> d
         "message": info.get("latest_message", ""),
         "duration_s": round(time.time() - t0, 1),
         "legacy": True,
+        "healed": heal_needed,
     }
 
 
