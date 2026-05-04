@@ -35,6 +35,18 @@ WORKERS="${QKBE_WORKERS:-1}"
 # Timeout 120s: syncs run in background threads (not blocking HTTP handlers),
 # so this only kills stuck *request handlers* (e.g. hung PDF generation).
 # The QID delta sync (600s) runs in a thread and won't trigger this timeout.
+# ── Pre-flight: ensure dependencies are installed ─────────────────────────
+# After an in-app update, new code may require packages not yet installed.
+# This catches that on the next container start (restart after update).
+if [ -f /app/requirements.txt ]; then
+    python3 -c "from app.main import app" 2>/dev/null
+    if [ $? -ne 0 ]; then
+        echo "[QKBE] App import failed — installing dependencies..."
+        pip install --no-cache-dir -r /app/requirements.txt -q 2>/dev/null
+        echo "[QKBE] Dependencies installed — retrying..."
+    fi
+fi
+
 GUNICORN_ARGS="--bind ${BIND}:${PORT} --workers ${WORKERS} --timeout 120 --preload app.main:app"
 
 if [ -f "$CERT" ] && [ -f "$KEY" ]; then
