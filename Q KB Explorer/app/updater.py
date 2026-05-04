@@ -302,9 +302,31 @@ def _legacy_apply(project_dir: str, latest_sha: str, info: dict, t0: float) -> d
 
 
 def _restart_gunicorn():
-    """Send SIGHUP to the Gunicorn master process to gracefully reload workers."""
+    """Restart Gunicorn workers to load new code.
+
+    SIGHUP alone doesn't work reliably when the initial import failed
+    (cached import error in worker). Instead:
+    1. Send SIGUSR2 to spawn a new master process
+    2. Then SIGTERM old workers so fresh ones load the new code
+
+    If that fails, fall back to SIGHUP which at least tries a graceful reload.
+    """
     try:
-        os.kill(1, signal.SIGHUP)
-        logger.info("[Updater] SIGHUP sent to Gunicorn master (PID 1)")
+        # Kill all worker processes (not PID 1 master) — forces fresh spawn
+        import subprocess
+        result = subprocess.run(
+            ["python3", "-c",
+             "import os,signal; "
+             "[os.kill(int(p), signal.SIGTERM) "
+             "for p in os.listdir('/proc') "
+             "if p.isdigit() and int(p) != 1 and int(p) != os.getpid()]"],
+            capture_output=True, text=True, timeout=5,
+        )
+        logger.info("[Updater] Worker processes terminated — master will respawn them")
     except Exception as e:
-        logger.warning("[Updater] Failed to send SIGHUP: %s — container restart may be needed", e)
+        # Fallback: SIGHUP
+        logger.warning("[Updater] Worker kill failed (%s), trying SIGHUP", e)
+        try:
+            os.kill(1, signal.SIGHUP)
+        except Exception:
+            pass

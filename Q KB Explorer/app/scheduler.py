@@ -25,6 +25,8 @@ from app.database import (
     delete_schedule as db_delete_schedule,
     update_schedule_last_run,
     get_maintenance_config,
+    get_auto_update_config,
+    update_auto_update_last_check,
 )
 
 logger = logging.getLogger(__name__)
@@ -34,19 +36,15 @@ _scheduler: BackgroundScheduler | None = None
 
 # Frequency → interval in days
 FREQUENCY_DAYS = {
-    "daily":    1,    # ← added for the middleware use case where
-                      # data freshness matters; see README's
-                      # caching-middleware section
-    "2x_week":  3.5,
-    "1x_week":  7,
+    "2x_week": 3.5,
+    "1x_week": 7,
     "2x_month": 15,
     "1x_month": 30,
 }
 
 FREQUENCY_LABELS = {
-    "daily":    "Daily",
-    "2x_week":  "Twice a week",
-    "1x_week":  "Once a week",
+    "2x_week": "Twice a week",
+    "1x_week": "Once a week",
     "2x_month": "Twice a month",
     "1x_month": "Once a month",
 }
@@ -72,6 +70,9 @@ def init_scheduler(app):
 
     # Restore database maintenance schedule
     _restore_maintenance_schedule()
+
+    # Restore auto-update schedule
+    _restore_auto_update_schedule()
 
     _scheduler.start()
     logger.info("Sync scheduler started with %d restored jobs", len(schedules))
@@ -146,20 +147,15 @@ def execute_scheduled_sync(data_type: str):
     """Execute a scheduled delta sync. Called by APScheduler.
 
     Reuses the same sync infrastructure as the manual trigger_sync route.
-    Acquires the global sync mutex blocking, so two schedules that fire
-    at the same minute run sequentially instead of contending.
     """
     # Import here to avoid circular imports
-    from app.main import (
-        _active_syncs, _sync_progress, _build_client, app,
-        _sync_mutex, _sync_mutex_owner,
-    )
+    from app.main import _active_syncs, _sync_progress, _build_client, app
     from app.sync import SyncEngine
     from app.sync_log import create_sync_log
 
     logger.info("Scheduled sync starting for %s", data_type)
 
-    # Skip if same-type sync already running (idempotency for misfires)
+    # Skip if already running
     thread = _active_syncs.get(data_type)
     if thread and thread.is_alive():
         logger.info("Skipping scheduled %s sync — already running", data_type)
@@ -170,19 +166,6 @@ def execute_scheduled_sync(data_type: str):
     if not sched:
         logger.warning("No schedule found for %s — skipping", data_type)
         return
-
-    # Block until any in-flight sync finishes (queue behaviour for
-    # schedules that all fire at the same minute, e.g. weekly 02:00).
-    if _sync_mutex.locked():
-        running = _sync_mutex_owner.get("data_type") or "unknown"
-        logger.info("Scheduled %s sync waiting — %s is running",
-                    data_type, running)
-    _sync_mutex.acquire()
-    _sync_mutex_owner["data_type"] = data_type
-    import time as _time_mod
-    _sync_mutex_owner["started_at"] = _time_mod.strftime(
-        "%Y-%m-%dT%H:%M:%SZ", _time_mod.gmtime())
-    logger.info("Scheduled %s sync acquired mutex — proceeding", data_type)
 
     # Build client using stored credentials
     with app.app_context():
@@ -200,8 +183,6 @@ def execute_scheduled_sync(data_type: str):
             "cids": "/api/4.0/fo/compliance/control/",
             "policies": "/api/4.0/fo/compliance/policy/",
             "mandates": "/api/4.0/fo/compliance/control/",
-            "tags": "/qps/rest/2.0/search/am/tag",
-            "pm_patches": "/pm/v2/patches",
         }
         sync_log = create_sync_log(data_type, False, client.api_base, endpoints[data_type])
         client.sync_log = sync_log
@@ -220,8 +201,6 @@ def execute_scheduled_sync(data_type: str):
                     "cids": engine.sync_cids,
                     "policies": engine.sync_policies,
                     "mandates": engine.sync_mandates,
-                    "tags": engine.sync_tags,
-                    "pm_patches": engine.sync_pm_patches,
                 }[data_type]
                 result = method(full=False)
                 _sync_progress[data_type] = result
@@ -241,14 +220,6 @@ def execute_scheduled_sync(data_type: str):
                     if job and job.next_run_time:
                         next_utc = job.next_run_time.isoformat()
                 update_schedule_last_run(data_type, now_utc, next_utc)
-                # Release the global sync mutex so the next queued sync
-                # can proceed.
-                _sync_mutex_owner["data_type"] = None
-                _sync_mutex_owner["started_at"] = None
-                try:
-                    _sync_mutex.release()
-                except RuntimeError:
-                    logger.warning("Sync mutex was not held when releasing in scheduled run")
 
         sync_thread = threading.Thread(target=run_sync, daemon=True)
         _active_syncs[data_type] = sync_thread
@@ -486,3 +457,123 @@ def _get_system_timezone() -> str:
         return _time.tzname[0] or "UTC"
     except Exception:
         return "UTC"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Auto-Update Scheduling
+# ═══════════════════════════════════════════════════════════════════════════
+
+_AUTO_UPDATE_JOB_ID = "auto_update"
+
+
+def _execute_auto_update():
+    """APScheduler callback — check for and apply updates automatically."""
+    from app.updater import check_for_updates, apply_update
+
+    logger.info("[AutoUpdate] Running scheduled update check...")
+    try:
+        info = check_for_updates()
+        if info.get("error"):
+            logger.error("[AutoUpdate] Check failed: %s", info["error"])
+            update_auto_update_last_check("error", info["error"])
+            return
+
+        if not info.get("update_available"):
+            logger.info("[AutoUpdate] Already up to date (version %s)",
+                        (info.get("current") or "unknown")[:8])
+            update_auto_update_last_check("up_to_date")
+            return
+
+        logger.info("[AutoUpdate] Update available: %s — applying...",
+                     info.get("latest_short", ""))
+        result = apply_update()
+        if result["status"] == "ok":
+            logger.info("[AutoUpdate] Update applied: version %s",
+                        result.get("version_short", ""))
+            update_auto_update_last_check("updated")
+        else:
+            logger.error("[AutoUpdate] Update failed: %s", result.get("error"))
+            update_auto_update_last_check("error", result.get("error"))
+    except Exception as e:
+        logger.exception("[AutoUpdate] Scheduled update failed")
+        update_auto_update_last_check("error", str(e))
+
+
+def _restore_auto_update_schedule():
+    """Restore auto-update schedule from DB on startup."""
+    try:
+        config = get_auto_update_config()
+        if config and config.get("enabled"):
+            tz_name = config.get("timezone") or _get_system_timezone()
+            _schedule_auto_update_job(
+                config["day_of_week"], config["hour"], config["minute"], tz_name
+            )
+            logger.info("[AutoUpdate] Restored schedule: day=%d hour=%d:%02d tz=%s",
+                         config["day_of_week"], config["hour"], config["minute"], tz_name)
+    except Exception as e:
+        logger.warning("[AutoUpdate] Failed to restore schedule: %s", e)
+
+
+def schedule_auto_update(day_of_week: int, hour: int, minute: int,
+                          timezone: str) -> dict | None:
+    """Create or update the weekly auto-update schedule.
+
+    Args:
+        day_of_week: 0=Sunday..6=Saturday
+        hour: 0-23
+        minute: 0-59
+        timezone: IANA timezone name
+    """
+    _schedule_auto_update_job(day_of_week, hour, minute, timezone)
+    return get_auto_update_schedule_info(timezone)
+
+
+def _schedule_auto_update_job(day_of_week: int, hour: int, minute: int,
+                               timezone: str):
+    """Add or replace the APScheduler cron job for auto-updates."""
+    if not _scheduler:
+        return
+    try:
+        _scheduler.remove_job(_AUTO_UPDATE_JOB_ID)
+    except Exception:
+        pass
+
+    ap_dow = _DOW_TO_APSCHEDULER.get(day_of_week, 6)
+    trigger = CronTrigger(
+        day_of_week=ap_dow, hour=hour, minute=minute,
+        timezone=pytz.timezone(timezone) if timezone else pytz.utc,
+    )
+    _scheduler.add_job(
+        _execute_auto_update,
+        trigger=trigger,
+        id=_AUTO_UPDATE_JOB_ID,
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+
+
+def remove_auto_update_schedule():
+    """Remove the auto-update schedule."""
+    if _scheduler:
+        try:
+            _scheduler.remove_job(_AUTO_UPDATE_JOB_ID)
+        except Exception:
+            pass
+
+
+def get_auto_update_schedule_info(timezone: str = "") -> dict | None:
+    """Get next run time for the auto-update job."""
+    if not _scheduler:
+        return None
+    job = _scheduler.get_job(_AUTO_UPDATE_JOB_ID)
+    if not job or not job.next_run_time:
+        return None
+    tz_name = timezone or "UTC"
+    try:
+        local_dt = _utc_to_local(job.next_run_time, tz_name)
+        return {
+            "next_run_local": local_dt.strftime("%Y-%m-%d %I:%M %p"),
+            "next_run_utc": job.next_run_time.isoformat(),
+        }
+    except Exception:
+        return {"next_run_utc": job.next_run_time.isoformat()}

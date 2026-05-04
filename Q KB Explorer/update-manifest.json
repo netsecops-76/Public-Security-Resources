@@ -4,21 +4,21 @@
   "notes": "v2.1.0 — Threat Intel, Tag Overhaul, PM Linux Fix. Requires pydantic + spectree.",
   "steps": [
     {
-      "action": "copy_dir",
-      "src": "app",
-      "dst": "app",
-      "comment": "Replace entire app/ directory with new code"
-    },
-    {
       "action": "copy_file",
       "src": "requirements.txt",
       "dst": "requirements.txt",
-      "comment": "Update dependency list"
+      "comment": "Update dependency list FIRST so pip install works"
     },
     {
       "action": "pip_install",
       "args": "-r requirements.txt",
-      "comment": "Install new/updated dependencies (pydantic, spectree, etc.)"
+      "comment": "Install dependencies BEFORE replacing code — prevents import errors on reload"
+    },
+    {
+      "action": "copy_dir",
+      "src": "app",
+      "dst": "app",
+      "comment": "Replace entire app/ directory with new code (deps already installed)"
     },
     {
       "action": "copy_file",
