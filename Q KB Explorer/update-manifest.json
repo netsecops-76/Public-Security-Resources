@@ -1,0 +1,41 @@
+{
+  "version": "2.1.0",
+  "min_updater_version": 1,
+  "notes": "v2.1.0 — Threat Intel, Tag Overhaul, PM Linux Fix. Requires pydantic + spectree.",
+  "steps": [
+    {
+      "action": "copy_dir",
+      "src": "app",
+      "dst": "app",
+      "comment": "Replace entire app/ directory with new code"
+    },
+    {
+      "action": "copy_file",
+      "src": "requirements.txt",
+      "dst": "requirements.txt",
+      "comment": "Update dependency list"
+    },
+    {
+      "action": "pip_install",
+      "args": "-r requirements.txt",
+      "comment": "Install new/updated dependencies (pydantic, spectree, etc.)"
+    },
+    {
+      "action": "copy_file",
+      "src": "update-manifest.json",
+      "dst": "update-manifest.json",
+      "comment": "Update the manifest itself for future updates"
+    },
+    {
+      "action": "restart",
+      "comment": "Save version SHA and restart Gunicorn workers"
+    }
+  ],
+  "skip_always": [
+    "Dockerfile",
+    "docker-compose.yml",
+    "entrypoint.sh",
+    ".gitignore",
+    "LICENSE"
+  ]
+}

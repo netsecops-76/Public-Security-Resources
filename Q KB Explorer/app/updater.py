@@ -1,15 +1,18 @@
 """
-Q KB Explorer — Application Updater
+Q KB Explorer — Manifest-Driven Application Updater
 
 Checks the public GitHub repository for new versions and applies updates
-by downloading the source tarball, extracting, and restarting Gunicorn.
+using an update-manifest.json that ships WITH each release. The manifest
+tells the updater exactly what to copy, what to skip, and what commands
+to run — so the update logic is always controlled by the NEW version,
+not the old one running the update.
 
 Source: https://github.com/netsecops-76/Public-Security-Resources
 Branch: Q-KB-Explorer
 """
 from __future__ import annotations
 
-import hashlib
+import json
 import logging
 import os
 import shutil
@@ -33,6 +36,10 @@ API_BASE = "https://api.github.com"
 VERSION_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".current_version")
 APP_DIR = os.path.dirname(os.path.dirname(__file__))  # /app
 
+# Updater protocol version — if the manifest requires a higher version,
+# the update is rejected with a message to rebuild the container.
+UPDATER_VERSION = 2
+
 
 def get_current_version() -> str | None:
     """Read the currently deployed commit SHA."""
@@ -48,13 +55,7 @@ def _save_version(sha: str):
 
 
 def check_for_updates() -> dict:
-    """
-    Check GitHub for new commits on the Q-KB-Explorer branch.
-
-    Returns:
-        {"update_available": bool, "current": str|None, "latest": str,
-         "latest_message": str, "latest_date": str, "commits_behind": int}
-    """
+    """Check GitHub for new commits on the Q-KB-Explorer branch."""
     try:
         url = f"{API_BASE}/repos/{REPO_OWNER}/{REPO_NAME}/branches/{BRANCH}"
         resp = requests.get(url, timeout=15, headers={"Accept": "application/vnd.github.v3+json"})
@@ -77,7 +78,6 @@ def check_for_updates() -> dict:
             "latest_date": latest_date,
         }
 
-        # Count commits behind (if we have a current version)
         if current and update_available:
             try:
                 compare_url = f"{API_BASE}/repos/{REPO_OWNER}/{REPO_NAME}/compare/{current}...{latest_sha}"
@@ -99,22 +99,20 @@ def check_for_updates() -> dict:
 
 def apply_update() -> dict:
     """
-    Download and apply the latest version from GitHub.
+    Download and apply update using the manifest from the NEW version.
 
-    Steps:
-    1. Download tarball of the Q-KB-Explorer branch
-    2. Extract to temp directory
-    3. Copy app/ files over current installation
-    4. Install any new pip requirements
-    5. Save new version SHA
-    6. Restart Gunicorn worker via SIGHUP
-
-    Returns: {"status": "ok"|"error", "version": str, ...}
+    The manifest (update-manifest.json) ships with each release and
+    tells this updater exactly what to do. This means:
+    - New dependencies are always installed (manifest says so)
+    - Docker-only files are never copied (manifest excludes them)
+    - Custom pre/post steps can be added per-release
+    - The old updater doesn't need to know anything about the new version
     """
     t0 = time.time()
+    steps_completed = []
 
     try:
-        # Step 1: Get latest SHA
+        # Step 1: Check for update
         logger.info("[Updater] Checking latest version...")
         info = check_for_updates()
         if info.get("error"):
@@ -125,9 +123,9 @@ def apply_update() -> dict:
         latest_sha = info["latest"]
         logger.info("[Updater] Downloading version %s...", latest_sha[:8])
 
-        # Step 2: Download tarball
+        # Step 2: Download and extract tarball
         tarball_url = f"https://github.com/{REPO_OWNER}/{REPO_NAME}/archive/{BRANCH}.tar.gz"
-        resp = requests.get(tarball_url, timeout=60, stream=True)
+        resp = requests.get(tarball_url, timeout=120, stream=True)
         resp.raise_for_status()
 
         with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp:
@@ -135,84 +133,177 @@ def apply_update() -> dict:
                 tmp.write(chunk)
             tmp_path = tmp.name
 
-        # Step 3: Extract
-        logger.info("[Updater] Extracting update...")
         extract_dir = tempfile.mkdtemp()
         with tarfile.open(tmp_path, "r:gz") as tar:
             tar.extractall(extract_dir)
 
-        # Find the extracted directory (GitHub tarballs have a top-level dir)
         entries = os.listdir(extract_dir)
         if len(entries) != 1:
             raise RuntimeError(f"Unexpected tarball structure: {entries}")
-        source_dir = os.path.join(extract_dir, entries[0])
+        repo_root = os.path.join(extract_dir, entries[0])
+        steps_completed.append("download")
 
-        # Step 4: Copy app/ files
-        # The public repo has app/ nested under "Q KB Explorer/" subdirectory.
-        # Check both locations for compatibility.
-        src_app = os.path.join(source_dir, "app")
-        if not os.path.isdir(src_app):
-            # Try nested path (Public-Security-Resources structure)
-            src_app = os.path.join(source_dir, "Q KB Explorer", "app")
-        dst_app = os.path.join(APP_DIR, "app")
-        if not os.path.isdir(src_app):
-            raise RuntimeError(f"No app/ directory found in update. Checked: {os.listdir(source_dir)}")
+        # Step 3: Find the project directory and load manifest
+        # Try both root and nested "Q KB Explorer/" path
+        project_dir = repo_root
+        manifest_path = os.path.join(project_dir, "update-manifest.json")
+        if not os.path.exists(manifest_path):
+            project_dir = os.path.join(repo_root, "Q KB Explorer")
+            manifest_path = os.path.join(project_dir, "update-manifest.json")
 
-        logger.info("[Updater] Applying update: %s → %s", src_app, dst_app)
-        # Remove old app dir and replace with new
-        shutil.rmtree(dst_app)
-        shutil.copytree(src_app, dst_app)
+        if not os.path.exists(manifest_path):
+            # Fallback: no manifest — use legacy behavior
+            logger.warning("[Updater] No update-manifest.json found. Using legacy update.")
+            return _legacy_apply(project_dir, latest_sha, info, t0)
 
-        # Also copy requirements.txt if present (check both root and nested path)
-        src_reqs = os.path.join(source_dir, "requirements.txt")
-        if not os.path.exists(src_reqs):
-            src_reqs = os.path.join(source_dir, "Q KB Explorer", "requirements.txt")
-        dst_reqs = os.path.join(APP_DIR, "requirements.txt")
-        if os.path.exists(src_reqs):
-            shutil.copy2(src_reqs, dst_reqs)
+        with open(manifest_path) as f:
+            manifest = json.load(f)
 
-        # Step 5: Install new requirements (if any changed)
-        logger.info("[Updater] Installing dependencies...")
-        try:
-            subprocess.run(
-                ["pip", "install", "--no-cache-dir", "-r", dst_reqs],
-                capture_output=True, text=True, timeout=120,
-            )
-        except Exception as e:
-            logger.warning("[Updater] pip install warning: %s", e)
+        logger.info("[Updater] Manifest loaded: version=%s, %d steps",
+                    manifest.get("version", "?"), len(manifest.get("steps", [])))
 
-        # Step 6: Save version
-        _save_version(latest_sha)
+        # Step 4: Check updater version compatibility
+        min_version = manifest.get("min_updater_version", 1)
+        if min_version > UPDATER_VERSION:
+            return {
+                "status": "error",
+                "error": (
+                    f"This update requires updater version {min_version} but you have "
+                    f"version {UPDATER_VERSION}. Please rebuild the Docker container "
+                    f"manually: docker compose build --no-cache && docker compose up -d"
+                ),
+            }
 
-        # Cleanup
-        os.remove(tmp_path)
-        shutil.rmtree(extract_dir)
+        # Step 5: Execute manifest steps
+        for i, step in enumerate(manifest.get("steps", [])):
+            action = step.get("action")
+            logger.info("[Updater] Step %d/%d: %s", i + 1, len(manifest["steps"]), action)
+
+            if action == "copy_dir":
+                src = os.path.join(project_dir, step["src"])
+                dst = os.path.join(APP_DIR, step["dst"])
+                if not os.path.isdir(src):
+                    raise RuntimeError(f"copy_dir: source not found: {src}")
+                if os.path.exists(dst):
+                    shutil.rmtree(dst)
+                shutil.copytree(src, dst)
+                steps_completed.append(f"copy_dir:{step['dst']}")
+
+            elif action == "copy_file":
+                src = os.path.join(project_dir, step["src"])
+                dst = os.path.join(APP_DIR, step["dst"])
+                if os.path.exists(src):
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    shutil.copy2(src, dst)
+                    steps_completed.append(f"copy_file:{step['dst']}")
+                elif step.get("required", False):
+                    raise RuntimeError(f"copy_file: required file not found: {src}")
+
+            elif action == "pip_install":
+                args = step.get("args", "-r requirements.txt")
+                cmd = f"pip install --no-cache-dir {args}"
+                logger.info("[Updater] Running: %s", cmd)
+                result = subprocess.run(
+                    cmd.split(),
+                    capture_output=True, text=True, timeout=180,
+                    cwd=APP_DIR,
+                )
+                if result.returncode != 0:
+                    logger.warning("[Updater] pip install returned %d: %s",
+                                   result.returncode, result.stderr[:500])
+                steps_completed.append("pip_install")
+
+            elif action == "run_command":
+                cmd = step["cmd"]
+                logger.info("[Updater] Running command: %s", cmd)
+                subprocess.run(
+                    cmd, shell=True, capture_output=True, text=True,
+                    timeout=step.get("timeout", 60), cwd=APP_DIR,
+                )
+                steps_completed.append(f"run_command:{cmd[:30]}")
+
+            elif action == "restart":
+                # Save version before restart
+                _save_version(latest_sha)
+                steps_completed.append("save_version")
+                # Cleanup temp files
+                os.remove(tmp_path)
+                shutil.rmtree(extract_dir)
+                # Restart
+                logger.info("[Updater] Restarting Gunicorn...")
+                _restart_gunicorn()
+                steps_completed.append("restart")
+
+            else:
+                logger.warning("[Updater] Unknown action '%s' — skipping", action)
+
+        # If no restart step in manifest, save version and cleanup anyway
+        if "restart" not in [s.get("action") for s in manifest.get("steps", [])]:
+            _save_version(latest_sha)
+            os.remove(tmp_path)
+            shutil.rmtree(extract_dir)
 
         duration = round(time.time() - t0, 1)
-        logger.info("[Updater] Update applied in %.1fs — version %s", duration, latest_sha[:8])
-
-        # Step 7: Restart Gunicorn
-        logger.info("[Updater] Restarting Gunicorn workers...")
-        _restart_gunicorn()
+        logger.info("[Updater] Update complete in %.1fs — %s", duration, latest_sha[:8])
 
         return {
             "status": "ok",
             "version": latest_sha,
             "version_short": latest_sha[:8],
             "message": info.get("latest_message", ""),
+            "manifest_version": manifest.get("version"),
+            "steps_completed": steps_completed,
             "duration_s": duration,
         }
 
     except Exception as e:
         duration = round(time.time() - t0, 1)
-        logger.error("[Updater] Update failed after %.1fs: %s", duration, e)
-        return {"status": "error", "error": str(e), "duration_s": duration}
+        logger.error("[Updater] Update failed after %.1fs at step '%s': %s",
+                     duration, steps_completed[-1] if steps_completed else "init", e)
+        return {
+            "status": "error",
+            "error": str(e),
+            "steps_completed": steps_completed,
+            "duration_s": duration,
+        }
+
+
+def _legacy_apply(project_dir: str, latest_sha: str, info: dict, t0: float) -> dict:
+    """Fallback for repos without update-manifest.json."""
+    src_app = os.path.join(project_dir, "app")
+    dst_app = os.path.join(APP_DIR, "app")
+    if not os.path.isdir(src_app):
+        return {"status": "error", "error": f"No app/ found in {os.listdir(project_dir)}"}
+
+    shutil.rmtree(dst_app)
+    shutil.copytree(src_app, dst_app)
+
+    src_reqs = os.path.join(project_dir, "requirements.txt")
+    dst_reqs = os.path.join(APP_DIR, "requirements.txt")
+    if os.path.exists(src_reqs):
+        shutil.copy2(src_reqs, dst_reqs)
+        try:
+            subprocess.run(["pip", "install", "--no-cache-dir", "-r", dst_reqs],
+                           capture_output=True, text=True, timeout=120)
+        except Exception as e:
+            logger.warning("[Updater] Legacy pip install: %s", e)
+
+    _save_version(latest_sha)
+    _restart_gunicorn()
+
+    return {
+        "status": "ok",
+        "version": latest_sha,
+        "version_short": latest_sha[:8],
+        "message": info.get("latest_message", ""),
+        "duration_s": round(time.time() - t0, 1),
+        "legacy": True,
+    }
 
 
 def _restart_gunicorn():
     """Send SIGHUP to the Gunicorn master process to gracefully reload workers."""
     try:
-        # Gunicorn master is PID 1 in Docker
         os.kill(1, signal.SIGHUP)
         logger.info("[Updater] SIGHUP sent to Gunicorn master (PID 1)")
     except Exception as e:
