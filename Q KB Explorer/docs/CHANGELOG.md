@@ -158,7 +158,7 @@ Q KB Explorer's documented JSON API plus its scheduled-delta auto-maintenance ma
 - Supported Modules field in QID detail modal
 - Supported Modules column in QID CSV export
 - `vuln_supported_modules` database table
-- Development Foundation onboarding (CLAUDE.md, docs/, .github/dependabot.yml)
+- Development Foundation onboarding (docs/, .github/dependabot.yml)
 - Automatic weekly database maintenance with compressed backup, integrity check, VACUUM, ANALYZE
 - `db_maintenance_config` table, `app/maintenance.py` module (backup, restore, vacuum)
 - Database Maintenance card in Settings tab (day/time picker, last run status, backup info)

@@ -136,6 +136,8 @@ async function _retryHealth() {
     }
 }
 
+function _isAuthError(e) { return e && e._authRequired; }
+
 async function apiFetch(url, options = {}) {
     // Merge CSRF header into all requests
     options.headers = Object.assign({ "X-Requested-With": "QKBE" }, options.headers || {});
@@ -155,24 +157,38 @@ async function apiFetch(url, options = {}) {
     // Server responded — clear any unresponsive state
     if (_serverUnresponsive) _dismissBanner();
     if (resp.status === 401) {
-        clearVaultState();
-        try {
-            const creds = await fetch("/api/credentials").then(r => r.json());
-            if (Array.isArray(creds) && creds.length > 0) showVaultAuth(creds);
-        } catch (e) { /* ignore */ }
-        throw new Error("Authentication required");
+        // /api/credentials/verify returns 401 on a wrong password — that's
+        // an expected flow (the user mistyped, show them an error), not
+        // a session-expired event. Don't re-show the auth modal for it,
+        // or it'll clear the password input before the caller can render
+        // its own error message. Same for the logout endpoint.
+        const isAuthEndpoint = (
+            url.indexOf("/api/credentials/verify") === 0 ||
+            url.indexOf("/api/auth/") === 0
+        );
+        if (!isAuthEndpoint) {
+            clearVaultState();
+            try {
+                const creds = await fetch("/api/credentials").then(r => r.json());
+                if (Array.isArray(creds) && creds.length > 0) showVaultAuth(creds);
+            } catch (e) { /* ignore */ }
+            const authErr = new Error("Authentication required");
+            authErr._authRequired = true;  // flag so callers can suppress toasts
+            throw authErr;
+        }
+        // Auth endpoint returned 401 — let the caller handle it.
     }
     return resp;
 }
 
 // ── Total record counts per data type (updated from sync status) ────────
-let _totalCounts = { qids: 0, cids: 0, policies: 0, mandates: 0 };
+let _totalCounts = { qids: 0, cids: 0, policies: 0, mandates: 0, tags: 0, pm_patches: 0 };
 
 // ── Track whether each tab has auto-loaded its first page ───────────────
-let _tabLoaded = { dashboard: false, qids: false, cids: false, policies: false, mandates: false, help: false };
+let _tabLoaded = { dashboard: false, qids: false, cids: false, policies: false, mandates: false, intel: false, tags: false, help: false };
 
 // ── In-flight request abort controllers for type-ahead ──────────────────
-const _searchAbort = { qids: null, cids: null, policies: null, mandates: null };
+const _searchAbort = { qids: null, cids: null, policies: null, mandates: null, tags: null, pm_patches: null };
 
 // ── Chart.js instances (for destroy/recreate on theme change) ────────────
 let _charts = { severity: null, criticality: null, categories: null };
@@ -186,6 +202,7 @@ const _TAB_NAMES = ["dashboard", "qids", "cids", "policies", "mandates", "settin
 const _SEARCH_INPUTS = {
     qids: "qidSearchInput", cids: "cidSearchInput",
     policies: "policySearchInput", mandates: "mandateSearchInput",
+    tags: "tagSearchInput",
 };
 const _SHORTCUTS = {
     "1": { action: () => switchTab("dashboard"), desc: "Dashboard tab" },
@@ -193,8 +210,10 @@ const _SHORTCUTS = {
     "3": { action: () => switchTab("cids"), desc: "CIDs tab" },
     "4": { action: () => switchTab("policies"), desc: "Policies tab" },
     "5": { action: () => switchTab("mandates"), desc: "Mandates tab" },
-    "6": { action: () => switchTab("settings"), desc: "Settings tab" },
-    "7": { action: () => switchTab("help"), desc: "Help tab" },
+    "6": { action: () => switchTab("intel"), desc: "Intelligence tab" },
+    "7": { action: () => switchTab("tags"), desc: "Tags tab" },
+    "8": { action: () => switchTab("settings"), desc: "Settings tab" },
+    "9": { action: () => switchTab("help"), desc: "Help tab" },
     "/": { action: () => _focusCurrentSearch(), desc: "Focus search input" },
     "?": { action: () => _showShortcutsModal(), desc: "Show shortcuts" },
     "t": { action: () => toggleTheme(), desc: "Toggle theme" },
@@ -358,6 +377,7 @@ function restoreSearch(type, index) {
     else if (type === "cids") searchCids();
     else if (type === "policies") searchPolicies();
     else if (type === "mandates") searchMandates();
+    else if (type === "tags") { searchTags(); loadTagExports(); loadLibrary(); }
 }
 
 function openModal(id) {
@@ -396,6 +416,11 @@ class MultiSelect {
         if (!this.wrap) return;
         this.placeholder = opts.placeholder || "Search...";
         this.serverSearch = opts.serverSearch || null; // fn(query, cb) for remote search
+        // Opt-in callback fired after every selection change (select,
+        // deselect, clear). Used by filters that should re-query on
+        // pill change without a Search-button click. Mode toggles also
+        // fire it so swapping AND/OR refreshes results.
+        this.onChange = typeof opts.onChange === "function" ? opts.onChange : null;
         this.selected = [];
         this.allItems = [];
         this.highlightIdx = -1;
@@ -428,6 +453,7 @@ class MultiSelect {
             e.stopPropagation();
             this.mode = this.mode === "or" ? "and" : "or";
             this._updateToggle();
+            this._fireChange();
         });
         document.addEventListener("click", (e) => {
             if (!this.wrap.contains(e.target)) this._close();
@@ -523,6 +549,7 @@ class MultiSelect {
         this._renderPills();
         this._updateToggle();
         this._renderDropdown();
+        this._fireChange();
     }
 
     _deselect(value) {
@@ -532,6 +559,13 @@ class MultiSelect {
         this._renderPills();
         this._updateToggle();
         this._renderDropdown();
+        this._fireChange();
+    }
+
+    _fireChange() {
+        if (!this.onChange) return;
+        try { this.onChange(this.getValues(), this.getMode()); }
+        catch (e) { console.error("MultiSelect onChange handler threw:", e); }
     }
 
     _renderPills() {
@@ -570,12 +604,14 @@ class MultiSelect {
 
     getMode() { return this.mode; }
 
-    clear() {
+    clear(silent = false) {
+        const had = this.selected.length > 0;
         this.selected = [];
         this.mode = "or";
         this.inputEl.value = "";
         this._renderPills();
         this._updateToggle();
+        if (had && !silent) this._fireChange();
     }
 }
 
@@ -614,7 +650,11 @@ async function initApp() {
     await loadPlatforms();
     loadSavedSettings();
     await syncVaultFromServer();
-    loadSyncStatus();
+    // Await sync status so _totalCounts is populated BEFORE tab restore
+    // triggers the active tab's data load — otherwise the count badge
+    // shows 'Total: 0 | Found: N | 0.00%' for the brief window between
+    // the search response and the sync_status response.
+    await loadSyncStatus();
     initMultiSelects();
 
     // ── Type-ahead search-as-you-type ──
@@ -726,24 +766,40 @@ function initMultiSelects() {
         showModeToggle: false,
     });
 
+    // Tag filters — auto-apply on selection like the user/system
+    // dropdown next to it, no Search-button click required.
+    tagRuleTypeMs = new MultiSelect("tagRuleTypeMs", {
+        placeholder: "Rule type...",
+        showModeToggle: false,
+        onChange: () => searchTags(),
+    });
+
     // Load preloaded (non-server-search) filter values
     loadFilterOptions();
 }
 
 async function loadFilterOptions() {
     try {
-        const [qidCats, cidCats, polCats, mandatePublishers, qidModules] = await Promise.all([
+        const [qidCats, cidCats, polCats, mandatePublishers, qidModules, tagRuleTypes] = await Promise.all([
             apiFetch("/api/qids/filter-values?field=categories").then(r => r.json()),
             apiFetch("/api/cids/filter-values?field=categories").then(r => r.json()),
             apiFetch("/api/policies/filter-values?field=control_categories").then(r => r.json()),
             apiFetch("/api/mandates/filter-values?field=publishers").then(r => r.json()),
             apiFetch("/api/qids/filter-values?field=supported_modules").then(r => r.json()),
+            apiFetch("/api/tags/filter-values?field=rule_types").then(r => r.json()),
         ]);
         if (qidCategoryMs) qidCategoryMs.setItems(qidCats);
         if (qidSupportedModulesMs) qidSupportedModulesMs.setItems(qidModules);
         if (cidCategoryMs) cidCategoryMs.setItems(cidCats);
         if (policyCtrlCatMs) policyCtrlCatMs.setItems(polCats);
         if (mandatePublisherMs) mandatePublisherMs.setItems(mandatePublishers);
+        if (tagRuleTypeMs) tagRuleTypeMs.setItems(Array.isArray(tagRuleTypes) ? tagRuleTypes : []);
+        // Populate Intelligence category dropdown from QID categories
+        const intelCat = document.getElementById("intelCategory");
+        if (intelCat && Array.isArray(qidCats)) {
+            intelCat.innerHTML = '<option value="">All Categories</option>'
+                + qidCats.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("");
+        }
     } catch (e) {
         // Filter values not available until first sync — ignore
     }
@@ -786,31 +842,57 @@ function switchTab(tabName) {
     sessionStorage.setItem("qkbe_active_tab", tabName);
     window.scrollTo(0, 0);
 
-    // Auto-load records on first visit to a tab
-    if (tabName === "dashboard" && !_tabLoaded.dashboard) {
+    // Always reload data on tab visit so counters and cards reflect the
+    // current DB state (e.g. after a sync completed in the background, or
+    // when the user lands on a tab before the initial sync_status response
+    // populates _totalCounts). Each loader handles its own empty state if
+    // there's no data yet.
+    _refreshActiveTab(tabName);
+}
+
+function _refreshActiveTab(tabName) {
+    if (tabName === "dashboard") {
         _tabLoaded.dashboard = true;
         loadDashboard();
-    } else if (tabName === "qids" && !_tabLoaded.qids && _totalCounts.qids > 0) {
+    } else if (tabName === "qids") {
         _tabLoaded.qids = true;
         searchQids();
-    } else if (tabName === "cids" && !_tabLoaded.cids && _totalCounts.cids > 0) {
+    } else if (tabName === "cids") {
         _tabLoaded.cids = true;
         searchCids();
-    } else if (tabName === "policies" && !_tabLoaded.policies && _totalCounts.policies > 0) {
+    } else if (tabName === "policies") {
         _tabLoaded.policies = true;
         searchPolicies();
-    } else if (tabName === "mandates" && !_tabLoaded.mandates && _totalCounts.mandates > 0) {
+    } else if (tabName === "mandates") {
         _tabLoaded.mandates = true;
         searchMandates();
+    } else if (tabName === "tags") {
+        _tabLoaded.tags = true;
+        searchTags();
+    } else if (tabName === "intel") {
+        _tabLoaded.intel = true;
+        runIntel();
     }
+}
+
+// ─── Tag Sub-tabs ───────────────────────────────────────────────────────
+function switchTagSubTab(subtab) {
+    document.querySelectorAll(".tag-subtab").forEach(el => el.classList.remove("active"));
+    document.querySelectorAll("#tab-tags .sub-tab-btn").forEach(el => el.classList.remove("active"));
+    const content = document.getElementById("tag-subtab-" + subtab);
+    const btn = document.querySelector(`#tab-tags .sub-tab-btn[data-tagsubtab="${subtab}"]`);
+    if (content) content.classList.add("active");
+    if (btn) btn.classList.add("active");
+    if (subtab === "library") loadLibrary();
+    if (subtab === "migration") loadTagExports();
 }
 
 // ─── Policy Sub-tabs ────────────────────────────────────────────────────
 function switchPolicySubTab(subtab) {
     document.querySelectorAll(".policy-subtab").forEach(el => el.classList.remove("active"));
-    document.querySelectorAll(".sub-tab-btn").forEach(el => el.classList.remove("active"));
+    document.querySelectorAll("#tab-policies .sub-tab-btn").forEach(el => el.classList.remove("active"));
     const content = document.getElementById("policy-subtab-" + subtab);
-    const btn = document.querySelector(`.sub-tab-btn[data-subtab="${subtab}"]`);
+    const btn = document.querySelector(`#tab-policies .sub-tab-btn[data-subtab="${subtab}"]`);
     if (content) content.classList.add("active");
     if (btn) btn.classList.add("active");
     if (subtab === "migration") loadMigrationPolicies();
@@ -897,12 +979,65 @@ function toggleTheme() {
 
 // ─── Toast Notifications ────────────────────────────────────────────────
 function showToast(message, type = "info") {
+    // Suppress error toasts that are just "auth required" — the login
+    // modal is already showing, a toast is redundant and confusing.
+    if (type === "error" && typeof message === "string" &&
+        message.toLowerCase().includes("authentication required")) return;
     const container = document.getElementById("toastContainer");
     const toast = document.createElement("div");
     toast.className = "toast " + type;
     toast.textContent = message;
     container.appendChild(toast);
     setTimeout(() => { toast.style.opacity = "0"; setTimeout(() => toast.remove(), 300); }, 4000);
+}
+
+// ─── Themed Confirm / Prompt (replaces native browser dialogs) ──────────
+function themedConfirm(message) {
+    return new Promise(resolve => {
+        const overlay = document.createElement("div");
+        overlay.className = "modal-overlay";
+        overlay.style.zIndex = "99998";
+        overlay.innerHTML = `<div class="modal-box" style="max-width:440px;">
+            <div class="modal-header"><h2>Confirm</h2></div>
+            <div style="padding:18px;font-size:13px;line-height:1.6;white-space:pre-wrap;color:var(--text-1);">${escapeHtml(message)}</div>
+            <div class="modal-footer">
+                <button class="btn-sm btn-outline" id="_tcCancel">Cancel</button>
+                <button class="btn-sm btn-primary" id="_tcOk">OK</button>
+            </div>
+        </div>`;
+        document.body.appendChild(overlay);
+        overlay.querySelector("#_tcOk").onclick = () => { overlay.remove(); resolve(true); };
+        overlay.querySelector("#_tcCancel").onclick = () => { overlay.remove(); resolve(false); };
+        overlay.onclick = (e) => { if (e.target === overlay) { overlay.remove(); resolve(false); } };
+        overlay.querySelector("#_tcOk").focus();
+    });
+}
+
+function themedPrompt(message, defaultValue = "") {
+    return new Promise(resolve => {
+        const overlay = document.createElement("div");
+        overlay.className = "modal-overlay";
+        overlay.style.zIndex = "99998";
+        overlay.innerHTML = `<div class="modal-box" style="max-width:440px;">
+            <div class="modal-header"><h2>Input</h2></div>
+            <div style="padding:18px;">
+                <p style="font-size:13px;color:var(--text-1);margin:0 0 10px 0;">${escapeHtml(message)}</p>
+                <input type="text" id="_tpInput" value="${escapeHtml(defaultValue)}" style="width:100%;">
+            </div>
+            <div class="modal-footer">
+                <button class="btn-sm btn-outline" id="_tpCancel">Cancel</button>
+                <button class="btn-sm btn-primary" id="_tpOk">OK</button>
+            </div>
+        </div>`;
+        document.body.appendChild(overlay);
+        const input = overlay.querySelector("#_tpInput");
+        input.focus();
+        input.select();
+        overlay.querySelector("#_tpOk").onclick = () => { overlay.remove(); resolve(input.value); };
+        overlay.querySelector("#_tpCancel").onclick = () => { overlay.remove(); resolve(null); };
+        input.onkeydown = (e) => { if (e.key === "Enter") { overlay.remove(); resolve(input.value); } };
+        overlay.onclick = (e) => { if (e.target === overlay) { overlay.remove(); resolve(null); } };
+    });
 }
 
 // ─── Loading Overlay ────────────────────────────────────────────────────
@@ -1166,13 +1301,28 @@ function clearCredentials() {
 
 // ─── Vault Auth Gate ────────────────────────────────────────────────────
 function showVaultAuth(creds) {
+    const modal = document.getElementById("vaultAuthModal");
     const select = document.getElementById("vaultAuthSelect");
+    const pwField = document.getElementById("vaultAuthPassword");
+    const wasOpen = modal && modal.style.display === "flex";
+    // Repopulate the account list (safe — selects the same option by value)
+    const prevSelected = select ? select.value : "";
     select.innerHTML = creds.map(c =>
         `<option value="${c.id}">${escapeHtml(formatCredLabelMasked(c))}</option>`
     ).join("");
-    document.getElementById("vaultAuthPassword").value = "";
-    document.getElementById("vaultAuthError").style.display = "none";
-    document.getElementById("vaultAuthModal").style.display = "flex";
+    if (prevSelected && Array.from(select.options).some(o => o.value === prevSelected)) {
+        select.value = prevSelected;
+    }
+    // Don't blow away an in-flight password attempt if the modal is
+    // already showing — only reset on a fresh open.
+    if (!wasOpen) {
+        pwField.value = "";
+        document.getElementById("vaultAuthError").style.display = "none";
+    }
+    modal.style.display = "flex";
+    // Restore focus + caret position so any background re-show doesn't
+    // steal the user's typing rhythm.
+    if (wasOpen && document.activeElement !== pwField) pwField.focus();
 }
 
 async function verifyVaultAuth() {
@@ -1311,7 +1461,20 @@ async function loadSyncStatus() {
         updateSyncDisplay("Qid", status.qids, credMap);
         updateSyncDisplay("Cid", status.cids, credMap);
         updateSyncDisplay("Policy", status.policies, credMap);
+        updateSyncDisplay("Tag", status.tags, credMap);
+        updateSyncDisplay("Pm_patches", status.pm_patches, credMap);
         updateMandateSyncDisplay(status.mandates, status.cids, credMap);
+
+        // Auto-attach to any sync that was already running on the
+        // backend before the user landed on this page (e.g. after a
+        // browser reload mid-sync, or after clicking Refresh while a
+        // sync is in flight). Without this the progress bar stays
+        // hidden and the user assumes the sync is dead, even though
+        // the worker thread is still happily writing pages to SQLite.
+        ["qids", "cids", "policies", "tags", "pm_patches"].forEach(t => {
+            const s = status[t];
+            if (s && s.syncing) _attachPoller(t);
+        });
 
         // CID dependency warning for Policies
         const cidWarning = document.getElementById("policyCidWarning");
@@ -1330,10 +1493,18 @@ async function loadSyncStatus() {
             if (techHint) techHint.style.display = "none";
         }
 
-        // Auto-load QIDs tab (default active tab) on initial page load
-        if (!_tabLoaded.qids && _totalCounts.qids > 0) {
-            _tabLoaded.qids = true;
-            searchQids();
+        // Refresh whichever data tab is currently active so its cards and
+        // counters reflect the just-loaded totals. Handles two cases:
+        //   1. Initial page load — user lands on a tab before the first
+        //      sync_status response arrives, so the auto-load couldn't
+        //      run with accurate _totalCounts.
+        //   2. Sync completion — pollSyncProgress calls loadSyncStatus
+        //      after a sync finishes; this picks up the fresh data on
+        //      whichever tab the user is looking at.
+        const activeTabBtn = document.querySelector(".tab-btn.active");
+        const activeTabName = activeTabBtn ? activeTabBtn.dataset.tab : null;
+        if (activeTabName) {
+            _refreshActiveTab(activeTabName);
         }
 
         // Fetch and display schedule badges
@@ -1434,7 +1605,7 @@ function _showMaintenanceFailureBanner(error) {
 }
 
 async function _restoreFromBackup() {
-    if (!confirm("Restore the database from the last backup? This will replace the current database.")) return;
+    if (!await themedConfirm("Restore the database from the last backup? This will replace the current database.")) return;
     try {
         const resp = await apiFetch("/api/maintenance/restore", {
             method: "POST", headers: { "Content-Type": "application/json" },
@@ -1513,7 +1684,7 @@ async function checkForUpdates() {
 }
 
 async function applyUpdate() {
-    if (!confirm("Apply the latest update? The application will restart after updating.")) return;
+    if (!await themedConfirm("Apply the latest update? The application will restart after updating.")) return;
     const statusEl = document.getElementById("updateStatus");
     const actionsEl = document.getElementById("updateActions");
     const applyBtn = document.getElementById("updateApplyBtn");
@@ -1681,18 +1852,54 @@ function submitGitHubIssue() {
 }
 
 // Map display type → data type key for _totalCounts
-const _typeToDataKey = { "Qid": "qids", "Cid": "cids", "Policy": "policies", "Mandate": "mandates" };
+const _typeToDataKey = { "Qid": "qids", "Cid": "cids", "Policy": "policies", "Mandate": "mandates", "Tag": "tags", "Pm_patches": "pm_patches" };
 // Reverse map: API data type → display key for updateSyncDisplay()
-const _dataKeyToDisplay = { "qids": "Qid", "cids": "Cid", "policies": "Policy", "mandates": "Mandate" };
+const _dataKeyToDisplay = { "qids": "Qid", "cids": "Cid", "policies": "Policy", "mandates": "Mandate", "tags": "Tag", "pm_patches": "Pm_patches" };
 
 function updateSyncDisplay(type, state, credMap) {
     const metaEl = document.getElementById("sync" + type + "Meta");
     const countEl = document.getElementById(type.toLowerCase() + "Count");
     const dataKey = _typeToDataKey[type] || type.toLowerCase() + "s";
+    // `syncing` is set by /api/sync/status whenever the worker thread
+    // for this type is alive. last_sync is only populated AFTER a sync
+    // completes, so during a long-running sync (e.g. a QID full sync
+    // that takes 10–20 min) last_sync is null. Without this guard the
+    // null branch below fires the misleading "watermark missing —
+    // re-sync to refresh" message while the sync is happily progressing.
+    //
+    // Belt + suspenders: also fall back to the per-type _activePollers
+    // set, which carries the local "we know a sync is in flight" signal
+    // even if /api/sync/status's view of the worker thread is briefly
+    // stale (e.g. during the tiny window between trigger_sync queueing
+    // and the loadSyncStatus refetch).
+    const dataType = _typeToDataKey[type] || type.toLowerCase() + "s";
+    const isSyncingNow = !!(state && state.syncing)
+                       || (typeof _activePollers !== "undefined"
+                           && _activePollers && _activePollers.has(dataType));
     if (!state || !state.last_sync) {
-        metaEl.textContent = "Not synced";
-        _totalCounts[dataKey] = 0;
-        if (countEl) countEl.textContent = "Total: 0";
+        const liveCount = (state && state.record_count) || 0;
+        _totalCounts[dataKey] = liveCount;
+        if (metaEl) {
+            if (isSyncingNow) {
+                // Mid-sync (no completed sync yet, or full-sync purge
+                // just cleared the watermark). Surface live count and
+                // a clear "running" hint instead of asking the user
+                // to re-sync.
+                metaEl.textContent = (liveCount > 0
+                    ? liveCount.toLocaleString() + " records loaded so far · Sync in progress…"
+                    : "Sync in progress…");
+            } else if (liveCount > 0) {
+                // Records are present but no completed-sync watermark.
+                // Most plausible explanation is "previous sync errored
+                // mid-flight"; re-sync clears + repopulates. Soften
+                // wording so it doesn't sound like data corruption.
+                metaEl.textContent = liveCount.toLocaleString()
+                    + " records · Last sync didn't finish — re-sync to refresh the watermark";
+            } else {
+                metaEl.textContent = "Not synced";
+            }
+        }
+        if (countEl) countEl.textContent = "Total: " + liveCount.toLocaleString();
         return;
     }
     const count = state.record_count || 0;
@@ -1711,8 +1918,42 @@ function updateSyncDisplay(type, state, credMap) {
         const cred = credMap[state.credential_id];
         if (cred) meta += " \u00B7 " + formatCredLabel(cred);
     }
+    // Persisted missing count (from full-sync / backfill verification).
+    // Skip when null \u2014 that means no verifying sync has run yet, so we
+    // don't have a number to show. Skip when 0 to keep the row tidy.
+    if (typeof state.last_missing_count === "number" && state.last_missing_count > 0) {
+        meta += " \u00B7 " + state.last_missing_count.toLocaleString() + " missing";
+    }
+    // If a worker thread is currently running for this type (Delta or
+    // Backfill on top of an existing watermark), suffix the meta so the
+    // user sees "...syncing now" rather than wondering why the progress
+    // bar is moving but the row says "Last sync: yesterday".
+    if (isSyncingNow) {
+        meta += " \u00B7 \u23F1 syncing now";
+    }
     metaEl.textContent = meta;
     if (countEl) countEl.textContent = "Total: " + count.toLocaleString();
+
+    // Backfill Missing button visibility (QIDs only). Hide it once we
+    // know nothing is missing — otherwise users keep clicking a no-op.
+    // Show on null (unknown) so the button is available before any
+    // verifying sync has run.
+    if (type === "Qid") {
+        const btn = document.getElementById("backfillQidsBtn");
+        if (btn) {
+            const missing = state.last_missing_count;
+            const hasFull = !!state.last_full_sync;
+            const knownClean = missing === 0 && hasFull;
+            btn.style.display = knownClean ? "none" : "";
+            if (typeof missing === "number" && missing > 0) {
+                btn.textContent = "Backfill Missing (" + missing.toLocaleString() + ")";
+                btn.title = missing.toLocaleString() + " QIDs in Qualys are not in your local DB — click to fetch only those.";
+            } else {
+                btn.textContent = "Backfill Missing";
+                btn.title = "Pull only QIDs the local DB is missing — no purge, no full re-pull";
+            }
+        }
+    }
 }
 
 function updateMandateSyncDisplay(mandateState, cidState, credMap) {
@@ -1751,8 +1992,8 @@ function updateMandateSyncDisplay(mandateState, cidState, credMap) {
 }
 
 function updateCountBadge(prefix, foundCount) {
-    // prefix: "qid", "cid", "policy", "mandate"
-    const dataKey = prefix === "qid" ? "qids" : prefix === "cid" ? "cids" : prefix === "mandate" ? "mandates" : "policies";
+    // prefix: "qid", "cid", "policy", "mandate", "tag"
+    const dataKey = prefix === "qid" ? "qids" : prefix === "cid" ? "cids" : prefix === "mandate" ? "mandates" : prefix === "tag" ? "tags" : "policies";
     const total = _totalCounts[dataKey] || 0;
     const el = document.getElementById(prefix + "Count");
     if (!el) return;
@@ -1765,7 +2006,7 @@ function updateCountBadge(prefix, foundCount) {
 }
 
 // Page timeout limits (seconds) — must match sync.py values
-const SYNC_TIMEOUTS = { qids: 600, cids: 300, policies: 300, mandates: 300 };
+const SYNC_TIMEOUTS = { qids: 600, cids: 300, policies: 300, mandates: 300, tags: 300, pm_patches: 600 };
 
 // ─── Type-Ahead Search ──────────────────────────────────────────────────
 function createTypeAheadHandler(dataType, searchFn, inputId) {
@@ -1791,6 +2032,19 @@ function createTypeAheadHandler(dataType, searchFn, inputId) {
     };
 }
 
+async function triggerBackfill(type) {
+    // Backfill = no purge, fetch only IDs the DB is missing.
+    // Reuses _executeSyncInternal so progress bar / queue / mutex
+    // semantics are identical to a normal sync.
+    if (!activeCredentialId) {
+        showToast("Save credentials first in Settings", "error");
+        switchTab("settings");
+        return;
+    }
+    showToast(type.toUpperCase() + " backfill started — only missing IDs will be fetched.", "info");
+    _executeSyncInternal(type, false, /* backfill */ true);
+}
+
 async function triggerSync(type, full) {
     if (!activeCredentialId) {
         showToast("Save credentials first in Settings", "error");
@@ -1804,7 +2058,7 @@ async function triggerSync(type, full) {
             _executeSyncInternal(type, true);
             return;
         }
-        const labels = { qids: "QID (Knowledge Base)", cids: "CID (Controls)", policies: "Policy", mandates: "Mandate" };
+        const labels = { qids: "QID (Knowledge Base)", cids: "CID (Controls)", policies: "Policy", mandates: "Mandate", tags: "Tag", pm_patches: "PM Patch Catalog" };
         document.getElementById("purgeDataTypeLabel").textContent = labels[type] || type;
         document.getElementById("purgeSyncContinueBtn").onclick = () => {
             closePurgeSyncModal();
@@ -1820,19 +2074,22 @@ function closePurgeSyncModal() {
     closeModal("purgeSyncModal");
 }
 
-async function _executeSyncInternal(type, full) {
+async function _executeSyncInternal(type, full, backfill) {
     const auth = getApiAuth();
     if (!auth.platform) { showToast("Select a Qualys platform first", "error"); return; }
 
-    const label = full ? "Full sync" : "Delta sync";
+    const label = backfill ? "Backfill" : (full ? "Full sync" : "Delta sync");
 
     // Full sync purges all data — clear the status card and browse tab
     // immediately so the user doesn't see stale data while re-downloading.
+    // Pass a synthetic syncing state instead of null so the meta line
+    // says "Sync in progress…" right away, before the first
+    // /api/sync/status round-trip lands.
     if (full) {
         const displayKey = _dataKeyToDisplay[type];
-        if (displayKey) updateSyncDisplay(displayKey, null);
-        const containerMap = {qids: "qidResults", cids: "cidResults", policies: "policyResults"};
-        const badgeKeyMap = {qids: "qid", cids: "cid", policies: "policy"};
+        if (displayKey) updateSyncDisplay(displayKey, {syncing: true, record_count: 0});
+        const containerMap = {qids: "qidResults", cids: "cidResults", policies: "policyResults", tags: "tagResults"};
+        const badgeKeyMap = {qids: "qid", cids: "cid", policies: "policy", tags: "tag"};
         const cid = containerMap[type];
         if (cid) {
             const el = document.getElementById(cid);
@@ -1873,7 +2130,7 @@ async function _executeSyncInternal(type, full) {
         const resp = await apiFetch("/api/sync/" + type, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ ...auth, full }),
+            body: JSON.stringify({ ...auth, full, backfill: !!backfill }),
         });
         const result = await resp.json();
         if (result.error) {
@@ -1882,6 +2139,19 @@ async function _executeSyncInternal(type, full) {
             textEl.textContent = "Error: " + result.error;
             fillEl.className = "sync-progress-fill error";
             fillEl.style.width = "100%";
+        } else if (result.queued) {
+            // Another sync is running. Backend has enqueued this one and
+            // will start it automatically when the current sync finishes.
+            showToast(
+                (result.message || (type.toUpperCase() + " queued — will start after the current sync finishes.")),
+                "info"
+            );
+            textEl.textContent = "Queued — waiting for "
+                + (result.running_now || "current sync")
+                + " to finish (position " + (result.queue_position || "?") + ")";
+            fillEl.className = "sync-progress-fill queued";
+            fillEl.style.width = "100%";
+            pollSyncProgress(type);
         } else if (result.started) {
             showToast(type.toUpperCase() + " " + label.toLowerCase() + " started", "info");
             pollSyncProgress(type);
@@ -1895,33 +2165,158 @@ async function _executeSyncInternal(type, full) {
     }
 }
 
+// Per-type poll-attached guard so loadSyncStatus()'s auto-resume can't
+// spawn duplicate pollers when the user clicks Refresh repeatedly
+// while a sync is in flight.
+const _activePollers = new Set();
+
+function _attachPoller(type) {
+    if (_activePollers.has(type)) return;          // already polling
+    const typeKey = type.charAt(0).toUpperCase() + type.slice(1);
+    const progressEl = document.getElementById("syncProgress" + typeKey);
+    if (!progressEl) return;
+    // Make the progress bar visible — _executeSyncInternal would have
+    // done this if the user clicked the button on this tab, but
+    // auto-resume is exactly the case where they didn't.
+    progressEl.style.display = "flex";
+    const fillEl = document.getElementById("syncFill" + typeKey);
+    if (fillEl && !fillEl.className) {
+        fillEl.className = "sync-progress-fill indeterminate";
+    }
+    pollSyncProgress(type);
+}
+
 async function pollSyncProgress(type) {
+    if (_activePollers.has(type)) return;
+    _activePollers.add(type);
     const typeKey = type.charAt(0).toUpperCase() + type.slice(1);
     const progressEl = document.getElementById("syncProgress" + typeKey);
     const textEl = document.getElementById("syncText" + typeKey);
     const fillEl = document.getElementById("syncFill" + typeKey);
     const countdownId = parseInt(progressEl.dataset.countdownId || "0");
 
-    let _lastProgressCount = -1;
+    // Stuck detection looks at *any* progress-relevant field, not just
+    // items_synced. During the pre-count phase items_synced stays 0
+    // while count_chunks_done climbs, and during a single big chunk
+    // pages_fetched / expected_total may be the only things moving.
+    // Watching the whole snapshot avoids false alarms during those
+    // legitimate-but-slow phases.
+    let _lastProgressKey = "";
     let _lastProgressTime = Date.now();
-    const _STUCK_THRESHOLD_MS = 300000; // 5 minutes with no progress change
+    // 10 minutes — large QID chunks plus rate-limit Retry-After waits
+    // can legitimately exceed 5 min even on a healthy sync. The wording
+    // also softens: "no recent progress, tool is still running" rather
+    // than "may be stuck — restart container".
+    const _STUCK_THRESHOLD_MS = 600000;
     let _stuckWarned = false;
+    // Refresh the sync-row meta line every ~20s while a sync runs so
+    // it stays in sync with the live state. Without this the row says
+    // "Sync in progress…" until the sync completes — fine, but the
+    // record_count under it stays stale until completion. A periodic
+    // /api/sync/status fetch keeps the count moving in real time.
+    const _META_REFRESH_EVERY_POLLS = 10;  // ~20s @ 2s poll interval
+    let _metaRefreshCount = 0;
 
     const poll = async () => {
         try {
             const resp = await apiFetch("/api/sync/" + type + "/progress");
             const p = await resp.json();
             if (p.running) {
-                // Stuck-sync detection: if items_synced unchanged for 5 min, warn user
-                const currentCount = p.items_synced || 0;
-                if (currentCount !== _lastProgressCount) {
-                    _lastProgressCount = currentCount;
+                // Make the progress label clickable while a sync is
+                // running so users can open the live event ticker
+                // ("peek under the hood"). Set once per poll cycle —
+                // cheap idempotent reattach.
+                textEl.classList.add("sync-progress-peek");
+                textEl.title = "Click to see live activity";
+                textEl.onclick = () => openSyncTicker(type);
+                // Periodically refresh the sync-row meta line so the
+                // record count + "Sync in progress…" hint reflects
+                // current backend state, not the snapshot from when
+                // the click happened.
+                _metaRefreshCount++;
+                if (_metaRefreshCount >= _META_REFRESH_EVERY_POLLS) {
+                    _metaRefreshCount = 0;
+                    loadSyncStatus();
+                }
+                // Queued — waiting on the global sync mutex. Show that
+                // explicitly so the user doesn't think we're stalled.
+                if (p.status === "queued") {
+                    if (countdownId) { clearInterval(countdownId); progressEl.dataset.countdownId = "0"; }
+                    fillEl.className = "sync-progress-fill queued";
+                    fillEl.style.width = "100%";
+                    const runningNow = p.running_now || "current sync";
+                    const pos = p.queue_position || "?";
+                    textEl.textContent = "Queued — waiting for " + runningNow
+                                       + " to finish (position " + pos + ")";
+                    setTimeout(poll, 2000);
+                    return;
+                }
+                // Stuck detection: any progress-relevant field changing
+                // is enough to count as live activity. Just watching
+                // items_synced false-fires during the pre-count phase
+                // (where count_chunks_done climbs but items_synced
+                // stays 0) and during processing of a single large
+                // chunk (where pages_fetched is the only thing moving).
+                const progressKey = [
+                    p.items_synced || 0,
+                    p.pages_fetched || 0,
+                    p.count_chunks_done || 0,
+                    p.count_pages_done || 0,
+                    p.expected_total || 0,
+                    p.status || "",
+                ].join("|");
+                if (progressKey !== _lastProgressKey) {
+                    _lastProgressKey = progressKey;
                     _lastProgressTime = Date.now();
                     _stuckWarned = false;
                 } else if (!_stuckWarned && (Date.now() - _lastProgressTime) > _STUCK_THRESHOLD_MS) {
                     _stuckWarned = true;
-                    textEl.textContent += " ⚠ No progress for 5 min — sync may be stuck";
-                    showToast(type.toUpperCase() + " sync appears stuck — no progress for 5 minutes. You can wait or restart the container.", "error");
+                    // Soft wording — the most common cause is a large
+                    // chunk being processed or a Retry-After rate-limit
+                    // pause. The tool is still running; pushing users
+                    // toward "restart the container" was wrong advice.
+                    textEl.textContent += " ⓘ No recent progress event — sync still running, likely on a slow Qualys response or a rate-limit retry.";
+                    showToast(
+                        type.toUpperCase() + " sync hasn't emitted a progress event in 10 minutes. " +
+                        "The tool is still running — large pages and rate-limit retries can each take several minutes. " +
+                        "Check the sync log for details if you're concerned; only restart if the log is also silent.",
+                        "info"
+                    );
+                }
+                // Pre-count phase — applies to qids/cids/policies/tags/
+                // pm_patches. The label and progress fraction adapt to
+                // whichever shape the backend reports:
+                //   - count_chunks_done / count_chunks_total (QIDs, paged)
+                //   - count_pages_done (CIDs, Policies, Tags by paging)
+                //   - just expected_total (Tags via single QPS count call)
+                if (p.status === "counting") {
+                    if (countdownId) { clearInterval(countdownId); progressEl.dataset.countdownId = "0"; }
+                    fillEl.classList.remove("indeterminate");
+                    const found = (p.expected_total || 0).toLocaleString();
+                    const noun = type === "qids" ? "QIDs"
+                              : type === "cids" ? "CIDs"
+                              : type === "policies" ? "policies"
+                              : type === "tags" ? "tags"
+                              : type === "pm_patches" ? "PM patches"
+                              : "records";
+                    let detail = "";
+                    let cpct = 7;  // default mid-progress for single-call counts
+                    if (p.count_chunks_total) {
+                        const cdone = p.count_chunks_done || 0;
+                        const ctot = p.count_chunks_total;
+                        detail = " in " + cdone + "/" + ctot + " chunks scanned";
+                        cpct = Math.min(15, (cdone / ctot) * 15);
+                    } else if (p.count_pages_done) {
+                        detail = " across " + p.count_pages_done + " pages scanned";
+                        cpct = Math.min(15, p.count_pages_done * 1.5);
+                    } else if (p.expected_total) {
+                        detail = " (count complete)";
+                        cpct = 15;
+                    }
+                    textEl.textContent = "Counting " + noun + "... " + found + " found" + detail;
+                    fillEl.style.width = cpct.toFixed(1) + "%";
+                    setTimeout(poll, 2000);
+                    return;
                 }
                 // Live progress update — data is flowing
                 if (p.items_synced !== undefined && p.items_synced > 0) {
@@ -1929,18 +2324,49 @@ async function pollSyncProgress(type) {
                     if (countdownId) { clearInterval(countdownId); progressEl.dataset.countdownId = "0"; }
                     const count = p.items_synced.toLocaleString();
                     const pages = p.pages_fetched || 0;
-                    if (p.status === "processing" && p.processing_item !== undefined) {
+                    if (p.status === "enriching" && p.enrich_total) {
+                        // Per-tag GET enrichment phase (Tags sync only)
+                        const done = (p.enrich_done || 0).toLocaleString();
+                        const tot = (p.enrich_total || 0).toLocaleString();
+                        textEl.textContent = count + " tags synced — enriching details " + done + "/" + tot + "...";
+                        fillEl.classList.remove("indeterminate");
+                        const enrichPct = (p.enrich_done && p.enrich_total)
+                            ? (p.enrich_done / p.enrich_total) * 100
+                            : 0;
+                        // Cap visual at 99% during enrichment so the bar
+                        // hits 100% only when the sync truly completes.
+                        fillEl.style.width = Math.min(99, enrichPct).toFixed(1) + "%";
+                    } else if (p.status === "processing" && p.processing_item !== undefined) {
                         // Per-control processing phase
                         const procItem = p.processing_item.toLocaleString();
                         const procTotal = (p.processing_total || 0).toLocaleString();
                         textEl.textContent = count + " synced — processing " + procItem + "/" + procTotal + " on page " + pages;
+                    } else if (p.expected_total && p.expected_total > 0) {
+                        // We know the exact denominator from the pre-count
+                        // pass — show real progress with both numerator and
+                        // expected total.
+                        const exp = p.expected_total.toLocaleString();
+                        const realPct = (p.items_synced / p.expected_total * 100).toFixed(1);
+                        textEl.textContent = count + " / " + exp
+                            + " records synced (page " + pages + ") — " + realPct + "%";
                     } else {
                         textEl.textContent = count + " records synced (page " + pages + ") — waiting for API...";
                     }
                     fillEl.classList.remove("indeterminate");
-                    const est = type === "qids" ? 100000 : type === "cids" ? 30000 : type === "mandates" ? 500 : 500;
-                    const pct = Math.min(95, (p.items_synced / est) * 100);
-                    fillEl.style.width = pct + "%";
+                    let pct;
+                    if (p.expected_total && p.expected_total > 0) {
+                        // Map detail-fetch progress into 15-99% so the
+                        // pre-count's 0-15% reservation isn't clobbered.
+                        const ratio = p.items_synced / p.expected_total;
+                        pct = 15 + Math.min(84, ratio * 84);
+                    } else {
+                        const est = type === "qids" ? 100000 : type === "cids" ? 30000 : type === "mandates" ? 500 : 500;
+                        pct = Math.min(95, (p.items_synced / est) * 100);
+                    }
+                    if (p.status !== "enriching") {
+                        // Enriching set its own width above; don't clobber it
+                        fillEl.style.width = pct + "%";
+                    }
                 } else if (p.status === "started") {
                     // First request in-flight, no data yet
                     if (!countdownId) textEl.textContent = "Requesting data from Qualys API...";
@@ -1948,8 +2374,16 @@ async function pollSyncProgress(type) {
                 // If items_synced is 0 or undefined, countdown timer handles the text
                 setTimeout(poll, 2000);
             } else {
-                // Sync complete — stop countdown
+                // Sync complete — stop countdown and release the
+                // per-type poller guard so the next sync click (or
+                // auto-resume on Refresh) can attach a fresh poller.
                 if (countdownId) clearInterval(countdownId);
+                _activePollers.delete(type);
+                // Strip the live-ticker affordance — sync is done,
+                // event log is now historical.
+                textEl.classList.remove("sync-progress-peek");
+                textEl.onclick = null;
+                textEl.title = "";
                 fillEl.className = "sync-progress-fill";
                 fillEl.style.width = "100%";
                 if (p.error) {
@@ -1991,6 +2425,7 @@ async function pollSyncProgress(type) {
                     else if (type === "cids") searchCids();
                     else if (type === "policies") searchPolicies();
                     else if (type === "mandates") searchMandates();
+                    else if (type === "tags") { searchTags(); loadTagExports(); loadLibrary(); }
                 }
                 // Keep progress bar visible — don't auto-hide
             }
@@ -2002,6 +2437,143 @@ async function pollSyncProgress(type) {
     setTimeout(poll, 1500);
 }
 
+// ─── Live Sync Event Ticker (peek under the hood) ───────────────────────
+// Polled-while-open viewer of recent sync_log_events for whichever type
+// is currently in flight. Zero overhead when closed; ~one cheap query
+// every 2s when open. Capped at 10 visible rows; new events animate in
+// at the top, oldest drop off the bottom.
+
+const _SYNC_TICKER_VISIBLE_CAP = 10;
+let _syncTickerState = {
+    open: false,
+    type: null,
+    sinceId: 0,        // last event id we've already shown (server returns id > sinceId)
+    rows: [],          // [{id, ts, event_type, detail}]
+    timer: null,       // setTimeout handle for next poll
+};
+
+// Event-type → row class for color cues. Keep narrow — every other
+// event renders neutral so the colored ones actually stand out.
+const _SYNC_TICKER_CLASS = {
+    SYNC_ERROR: "evt-error",
+    PAGE_ERROR: "evt-error",
+    CHUNK_ERROR: "evt-error",
+    BACKFILL_BATCH_ERROR: "evt-error",
+    COUNT_ERROR: "evt-error",
+    RATE_LIMIT_RETRY: "evt-warn",
+    VERIFY_MISSING: "evt-warn",
+    VERIFY_OK: "evt-success",
+    SYNC_COMPLETE: "evt-success",
+    CHUNK_COMPLETE: "evt-success",
+};
+
+function openSyncTicker(type) {
+    const modal = document.getElementById("syncTickerModal");
+    if (!modal) return;
+    // Reset state for a fresh open. since_id=0 so the first poll
+    // returns the most recent batch.
+    _syncTickerState = { open: true, type, sinceId: 0, rows: [], timer: null };
+    document.getElementById("syncTickerTitle").textContent =
+        type.toUpperCase() + " — live activity";
+    document.getElementById("syncTickerList").innerHTML = "";
+    document.getElementById("syncTickerStatus").textContent = "Connecting…";
+    openModal("syncTickerModal");
+    _syncTickerPoll();
+}
+
+function closeSyncTicker() {
+    if (_syncTickerState.timer) {
+        clearTimeout(_syncTickerState.timer);
+        _syncTickerState.timer = null;
+    }
+    _syncTickerState.open = false;
+    closeModal("syncTickerModal");
+}
+
+async function _syncTickerPoll() {
+    if (!_syncTickerState.open) return;
+    const type = _syncTickerState.type;
+    try {
+        const url = "/api/sync/" + type + "/events/tail?since_id="
+                  + _syncTickerState.sinceId + "&limit=25";
+        const resp = await apiFetch(url);
+        if (resp.ok) {
+            const data = await resp.json();
+            _syncTickerApply(data);
+        }
+    } catch (e) {
+        // Transient network error — keep retrying. Don't surface a
+        // toast; the ticker is best-effort.
+    }
+    if (_syncTickerState.open) {
+        _syncTickerState.timer = setTimeout(_syncTickerPoll, 2000);
+    }
+}
+
+function _syncTickerApply(data) {
+    const list = document.getElementById("syncTickerList");
+    const status = document.getElementById("syncTickerStatus");
+    if (!list || !status) return;
+    if (!data || !Array.isArray(data.events)) return;
+    if (data.events.length) {
+        // Server returns newest-first; we prepend in newest-last order
+        // so each newer event ends up on top in the DOM after the loop.
+        const newest = [...data.events].reverse();
+        for (const e of newest) {
+            _syncTickerState.rows.unshift(e);
+            if (e.id > _syncTickerState.sinceId) _syncTickerState.sinceId = e.id;
+        }
+        // Cap visible rows; oldest fall off the bottom.
+        if (_syncTickerState.rows.length > _SYNC_TICKER_VISIBLE_CAP) {
+            _syncTickerState.rows.length = _SYNC_TICKER_VISIBLE_CAP;
+        }
+        list.innerHTML = _syncTickerState.rows.map(_syncTickerRowHtml).join("");
+    }
+    // Status footer: run state + a heartbeat so the user can tell the
+    // poller is alive even when no new events have arrived.
+    const stamp = new Date().toLocaleTimeString();
+    const runStatus = data.run_status || "no run yet";
+    status.textContent = "Run status: " + runStatus
+                       + " · last poll " + stamp
+                       + (data.events.length ? "" : " · waiting for new events…");
+}
+
+function _syncTickerRowHtml(e) {
+    const cls = _SYNC_TICKER_CLASS[e.event_type] || "";
+    // Truncate timestamp to HH:MM:SS — full ISO is overkill for a ticker.
+    const ts = (e.ts || "").slice(11, 19) || "—";
+    // Compact detail: pick the most informative pair of (key,value).
+    // Prefer human-meaningful keys; fall back to whatever's first.
+    let detailText = "";
+    const d = e.detail || {};
+    const preferred = [
+        "items", "items_on_page", "items_synced", "expected_total",
+        "id_min", "id_max", "page", "missing_count", "received_total",
+        "platform", "target", "status", "retry_after", "error",
+    ];
+    for (const k of preferred) {
+        if (d[k] !== undefined && d[k] !== null && d[k] !== "") {
+            detailText = k + ": " + String(d[k]);
+            break;
+        }
+    }
+    if (!detailText) {
+        const keys = Object.keys(d);
+        if (keys.length) {
+            const k = keys[0];
+            const v = d[k];
+            const s = (typeof v === "object") ? JSON.stringify(v) : String(v);
+            detailText = k + ": " + (s.length > 80 ? s.slice(0, 77) + "…" : s);
+        }
+    }
+    return '<div class="sync-ticker-row ' + cls + '">'
+         + '<span class="sync-ticker-ts">' + escapeHtml(ts) + '</span>'
+         + '<span class="sync-ticker-evt">' + escapeHtml(e.event_type) + '</span>'
+         + '<span class="sync-ticker-detail">' + escapeHtml(detailText) + '</span>'
+         + '</div>';
+}
+
+
 // ─── Sync Details Modal ─────────────────────────────────────────────────
 // ── Sync history state ──
 let _syncHistoryType = null;
@@ -2009,7 +2581,7 @@ let _syncHistoryCache = null;
 let _syncHistoryExpanded = false;
 
 async function showSyncDetails(type) {
-    const labels = { qids: "QIDs (Knowledge Base)", cids: "CIDs (Controls)", policies: "Policies", mandates: "Mandates" };
+    const labels = { qids: "QIDs (Knowledge Base)", cids: "CIDs (Controls)", policies: "Policies", mandates: "Mandates", tags: "Tags", pm_patches: "PM Patch Catalog" };
     const titleEl = document.getElementById("syncDetailsTitle");
     const contentEl = document.getElementById("syncDetailsContent");
     const modal = document.getElementById("syncDetailsModal");
@@ -2127,6 +2699,8 @@ function _updateAdvFilterBadge() {
     let count = 0;
     if (document.getElementById("qidVulnTypeFilter").value) count++;
     if (document.getElementById("qidPciFilter").value) count++;
+    const _disabledEl = document.getElementById("qidDisabledFilter");
+    if (_disabledEl && _disabledEl.value) count++;
     if (document.getElementById("qidDiscoveryFilter").value) count++;
     if (document.getElementById("qidCvssBaseMin").value) count++;
     if (document.getElementById("qidCvss3BaseMin").value) count++;
@@ -2164,6 +2738,9 @@ function _qidSearchParams(page) {
     if (vulnType) params.set("vuln_type", vulnType);
     const pci = document.getElementById("qidPciFilter").value;
     if (pci) params.set("pci_flag", pci);
+    const disabledEl = document.getElementById("qidDisabledFilter");
+    const disabled = disabledEl ? disabledEl.value : "";
+    if (disabled !== "") params.set("disabled", disabled);
     const disc = document.getElementById("qidDiscoveryFilter").value;
     if (disc) params.set("discovery_method", disc);
     const cvssBase = document.getElementById("qidCvssBaseMin").value;
@@ -2225,6 +2802,10 @@ function renderQidResults(data) {
                     ${v.last_service_modification_datetime ? `<span>Modified: ${new Date(v.last_service_modification_datetime).toLocaleDateString()}</span>` : ""}
                 </div>
                 <div class="qid-card-badges">
+                    ${v.threat_active_attacks ? '<span class="threat-badge threat-badge-critical">Active Attacks</span>' : ""}
+                    ${v.threat_cisa_kev ? '<span class="threat-badge threat-badge-critical">CISA KEV</span>' : ""}
+                    ${v.threat_exploit_public ? '<span class="threat-badge threat-badge-high">Public Exploit</span>' : ""}
+                    ${v.threat_rce ? '<span class="threat-badge threat-badge-high">RCE</span>' : ""}
                     ${v.cve_count ? `<span class="badge-pill badge-cve">${v.cve_count} CVE${v.cve_count > 1 ? "s" : ""}</span>` : ""}
                     ${v.patchable ? '<span class="badge-pill badge-patchable">Patchable</span>' : '<span class="badge-pill badge-not-patchable">Not Patchable</span>'}
                     ${v.supported_modules ? v.supported_modules.split(', ').map(m => `<span class="badge-pill badge-module" title="${escapeHtml(m)}">${escapeHtml(m)}</span>`).join('') : ""}
@@ -2243,6 +2824,17 @@ async function showQidDetail(qid) {
 
         document.getElementById("qidDetailTitle").textContent = "QID " + v.qid + " — " + (v.title || "");
         const content = document.getElementById("qidDetailContent");
+
+        // Patchable status with color
+        const patchableHtml = v.patchable
+            ? `<span style="color:var(--success, #22c55e);font-weight:600;">Yes</span>`
+            : `<span style="color:var(--text-2);">No</span>`;
+        const patchDateHtml = v.patch_published_date
+            ? `<div class="detail-meta-item"><span class="detail-meta-label">Patch Published</span><span class="detail-meta-value">${new Date(v.patch_published_date).toLocaleDateString()}</span></div>`
+            : "";
+        // Threat intelligence badges
+        const threatHtml = _renderThreatBadges(v);
+
         content.innerHTML = `
             <div class="detail-meta-grid">
                 <div class="detail-meta-item">
@@ -2259,7 +2851,7 @@ async function showQidDetail(qid) {
                 </div>
                 <div class="detail-meta-item">
                     <span class="detail-meta-label">Patchable</span>
-                    <span class="detail-meta-value">${v.patchable ? "Yes" : "No"}</span>
+                    <span class="detail-meta-value">${patchableHtml}</span>
                 </div>
                 <div class="detail-meta-item">
                     <span class="detail-meta-label">Published</span>
@@ -2269,6 +2861,7 @@ async function showQidDetail(qid) {
                     <span class="detail-meta-label">Last Modified</span>
                     <span class="detail-meta-value">${v.last_service_modification_datetime ? new Date(v.last_service_modification_datetime).toLocaleDateString() : "N/A"}</span>
                 </div>
+                ${patchDateHtml}
                 ${v.cvss3_base ? `<div class="detail-meta-item"><span class="detail-meta-label">CVSS v3</span><span class="detail-meta-value">${v.cvss3_base}</span></div>` : ""}
                 ${v.cvss_base ? `<div class="detail-meta-item"><span class="detail-meta-label">CVSS v2</span><span class="detail-meta-value">${v.cvss_base}</span></div>` : ""}
                 <div class="detail-meta-item">
@@ -2276,17 +2869,202 @@ async function showQidDetail(qid) {
                     <span class="detail-meta-value">${(v.supported_modules && v.supported_modules.length) ? v.supported_modules.map(m => escapeHtml(m)).join(', ') : 'N/A'}</span>
                 </div>
             </div>
+
+            ${threatHtml}
+            ${_renderThreatDetailsSection(v)}
+            ${_renderRemediationSection(v)}
+
             ${v.diagnosis ? `<div class="detail-section"><h4>Diagnosis</h4><div class="detail-content">${v.diagnosis}</div></div>` : ""}
             ${v.consequence ? `<div class="detail-section"><h4>Consequence</h4><div class="detail-content">${v.consequence}</div></div>` : ""}
-            ${v.solution ? `<div class="detail-section"><h4>Solution</h4><div class="detail-content">${v.solution}</div></div>` : ""}
             ${renderRefList("CVEs", v.cves)}
             ${renderRefList("Bugtraq References", v.bugtraqs)}
             ${renderRefList("Vendor References", v.vendor_refs)}
+
+            <div class="detail-section" id="qidDetailPmPatches">
+                <h4>Patch Management Catalog</h4>
+                <div class="detail-content"><span class="tag-export-progress">Loading patches…</span></div>
+            </div>
         `;
         openModal("qidDetailModal");
+
+        // Load PM patches asynchronously
+        _loadQidPmPatches(v.qid);
     } catch (e) {
         showToast("Failed to load QID detail", "error");
     }
+}
+
+function _renderThreatBadges(v) {
+    const badges = [];
+    if (v.threat_active_attacks) badges.push('<span class="threat-badge threat-badge-critical">Active Attacks</span>');
+    if (v.threat_cisa_kev) badges.push('<span class="threat-badge threat-badge-critical">CISA KEV</span>');
+    if (v.threat_exploit_public) badges.push('<span class="threat-badge threat-badge-high">Public Exploit</span>');
+    if (v.threat_easy_exploit) badges.push('<span class="threat-badge threat-badge-high">Easy Exploit</span>');
+    if (v.threat_rce) badges.push('<span class="threat-badge threat-badge-high">RCE</span>');
+    if (v.threat_priv_escalation) badges.push('<span class="threat-badge threat-badge-medium">Priv Escalation</span>');
+    if (v.threat_malware) badges.push('<span class="threat-badge threat-badge-medium">Malware</span>');
+    if (v.exploit_count > 0) badges.push(`<span class="threat-badge threat-badge-info">${v.exploit_count} Exploit${v.exploit_count > 1 ? "s" : ""}</span>`);
+    if (v.malware_count > 0) badges.push(`<span class="threat-badge threat-badge-info">${v.malware_count} Malware</span>`);
+    if (badges.length === 0) return "";
+    return `<div class="threat-badges-row">${badges.join("")}</div>`;
+}
+
+function _renderThreatDetailsSection(v) {
+    // Parse threat_intelligence_json and correlation_json for full details
+    const ti = v.threat_intelligence_json;
+    const corr = v.correlation_json;
+    if (!ti && !corr) return "";
+
+    let html = '<div class="detail-section threat-details-section"><h4>Threat Intelligence</h4>';
+
+    // Threat tags
+    if (ti && ti.THREAT_INTEL) {
+        const tags = Array.isArray(ti.THREAT_INTEL) ? ti.THREAT_INTEL : [ti.THREAT_INTEL];
+        const tagNames = tags.map(t => typeof t === "object" ? (t["#text"] || "") : t).filter(Boolean);
+        if (tagNames.length) {
+            html += `<div class="threat-tags">${tagNames.map(t =>
+                `<span class="threat-tag">${escapeHtml(t.replace(/_/g, " "))}</span>`
+            ).join("")}</div>`;
+        }
+    }
+
+    // Exploits from correlation
+    if (corr && corr.EXPLOITS) {
+        const srcs = corr.EXPLOITS.EXPLT_SRC || [];
+        const srcList = Array.isArray(srcs) ? srcs : [srcs];
+        let exploits = [];
+        for (const src of srcList) {
+            const expltList = (src.EXPLT_LIST || {}).EXPLT || [];
+            const items = Array.isArray(expltList) ? expltList : [expltList];
+            for (const e of items) {
+                if (e.REF || e.DESC) exploits.push(e);
+            }
+        }
+        if (exploits.length) {
+            html += `<div class="threat-subsection"><strong>Known Exploits (${exploits.length})</strong>`;
+            html += '<div class="threat-exploit-list">';
+            for (const e of exploits.slice(0, 10)) {
+                const link = e.LINK ? `<a href="${escapeHtml(e.LINK)}" target="_blank" rel="noopener">${escapeHtml(e.DESC || e.REF || "View")}</a>` : escapeHtml(e.DESC || e.REF || "");
+                html += `<div class="threat-exploit-row"><span class="threat-exploit-ref">${escapeHtml(e.REF || "")}</span> ${link}</div>`;
+            }
+            if (exploits.length > 10) html += `<div class="muted-small">+ ${exploits.length - 10} more</div>`;
+            html += '</div></div>';
+        }
+    }
+
+    // Malware from correlation
+    if (corr && corr.MALWARE) {
+        const srcs = corr.MALWARE.MW_SRC || [];
+        const srcList = Array.isArray(srcs) ? srcs : [srcs];
+        let malware = [];
+        for (const src of srcList) {
+            const mwList = (src.MW_LIST || {}).MW_INFO || [];
+            const items = Array.isArray(mwList) ? mwList : [mwList];
+            for (const m of items) {
+                if (m.MW_ID || m.MW_TYPE) malware.push(m);
+            }
+        }
+        if (malware.length) {
+            html += `<div class="threat-subsection"><strong>Associated Malware (${malware.length})</strong>`;
+            html += '<div class="threat-malware-list">';
+            for (const m of malware.slice(0, 10)) {
+                html += `<div class="threat-malware-row">
+                    <span class="threat-malware-id">${escapeHtml(m.MW_ID || "")}</span>
+                    <span class="threat-malware-type">${escapeHtml(m.MW_TYPE || "")}</span>
+                    <span class="muted-small">${escapeHtml(m.MW_PLATFORM || "")}</span>
+                </div>`;
+            }
+            if (malware.length > 10) html += `<div class="muted-small">+ ${malware.length - 10} more</div>`;
+            html += '</div></div>';
+        }
+    }
+
+    html += '</div>';
+    return html;
+}
+
+function _renderRemediationSection(v) {
+    if (!v.solution && !v.patchable) return "";
+
+    let html = `<div class="detail-section qid-remediation-section">
+        <h4>Remediation</h4>`;
+
+    if (v.patchable) {
+        html += `<div class="qid-remediation-status qid-remediation-available">
+            <strong>Vendor fix available</strong>`;
+        if (v.patch_published_date) {
+            html += ` <span class="muted-small">(published ${new Date(v.patch_published_date).toLocaleDateString()})</span>`;
+        }
+        html += `</div>`;
+    }
+
+    if (v.solution) {
+        html += `<div class="detail-content qid-solution-content">${v.solution}</div>`;
+    }
+
+    html += `</div>`;
+    return html;
+}
+
+async function _loadQidPmPatches(qid) {
+    const container = document.getElementById("qidDetailPmPatches");
+    if (!container) return;
+    try {
+        const resp = await apiFetch("/api/qids/" + qid + "/patches");
+        const data = await resp.json();
+        const patches = data.patches || [];
+
+        if (patches.length === 0) {
+            container.innerHTML = `<h4>Patch Management Catalog</h4>
+                <div class="detail-content muted-small">No PM catalog patches linked to this QID.
+                ${data.has_pm === false ? " (Sync the PM Patch Catalog in Settings to populate this data.)" : ""}</div>`;
+            return;
+        }
+
+        const winPatches = patches.filter(p => p.platform === "Windows");
+        const linPatches = patches.filter(p => p.platform === "Linux");
+
+        let html = `<h4>Patch Management Catalog <span class="muted-small">(${patches.length} patch${patches.length === 1 ? "" : "es"})</span></h4>`;
+
+        if (winPatches.length) {
+            html += `<div class="pm-patch-group">
+                <strong class="pm-patch-platform">Windows (${winPatches.length})</strong>
+                ${winPatches.map(_pmPatchRowHtml).join("")}
+            </div>`;
+        }
+        if (linPatches.length) {
+            html += `<div class="pm-patch-group">
+                <strong class="pm-patch-platform">Linux (${linPatches.length})</strong>
+                ${linPatches.map(_pmPatchRowHtml).join("")}
+            </div>`;
+        }
+
+        container.innerHTML = html;
+    } catch (e) {
+        container.innerHTML = `<h4>Patch Management Catalog</h4>
+            <div class="detail-content muted-small">Failed to load patches.</div>`;
+    }
+}
+
+function _pmPatchRowHtml(p) {
+    const sevClass = (p.vendor_severity || "").toLowerCase();
+    const sevBadge = p.vendor_severity && p.vendor_severity !== "None"
+        ? `<span class="pm-sev pm-sev-${sevClass}">${escapeHtml(p.vendor_severity)}</span>`
+        : "";
+    const secBadge = p.is_security ? '<span class="badge-pill badge-pill-preferred">Security</span>' : "";
+    const kbLink = p.kb_article
+        ? `<a href="https://support.microsoft.com/help/${p.kb_article.replace('KB','')}" target="_blank" rel="noopener">${escapeHtml(p.kb_article)}</a>`
+        : "";
+    const reboot = p.reboot_required ? '<span class="muted-small" title="Reboot required">↻</span>' : "";
+    const packages = p.package_names
+        ? `<div class="pm-patch-packages muted-small">${escapeHtml(p.package_names.split(";").slice(0, 3).join(", "))}${p.package_names.split(";").length > 3 ? "…" : ""}</div>`
+        : "";
+
+    return `<div class="pm-patch-row">
+        <div class="pm-patch-title">${escapeHtml(p.title || "")} ${reboot}</div>
+        <div class="pm-patch-meta">${sevBadge} ${secBadge} ${kbLink} <span class="muted-small">${escapeHtml(p.download_method || "")}</span></div>
+        ${packages}
+    </div>`;
 }
 
 // ─── Search: CIDs ───────────────────────────────────────────────────────
@@ -2476,6 +3254,8 @@ function clearQidFilters() {
     // Advanced filters
     document.getElementById("qidVulnTypeFilter").value = "";
     document.getElementById("qidPciFilter").value = "";
+    const _disClearEl = document.getElementById("qidDisabledFilter");
+    if (_disClearEl) _disClearEl.value = "";
     document.getElementById("qidDiscoveryFilter").value = "";
     document.getElementById("qidCvssBaseMin").value = "";
     document.getElementById("qidCvss3BaseMin").value = "";
@@ -2667,6 +3447,2933 @@ async function searchMandatesPage(page) {
     } catch (e) { showToast("Search failed", "error"); }
 }
 
+// ─── Search: Tags ────────────────────────────────────────────────────────
+let tagRuleTypeMs;
+
+function _tagSearchParams(page) {
+    const params = new URLSearchParams();
+    const q = document.getElementById("tagSearchInput").value;
+    if (q) params.set("q", q);
+    const ruleTypes = tagRuleTypeMs ? tagRuleTypeMs.getValues() : [];
+    if (ruleTypes.length) params.set("rule_type", ruleTypes.join(","));
+    const ownership = document.getElementById("tagOwnership").value;
+    if (ownership === "user") params.set("only_user", "1");
+    else if (ownership === "system") params.set("only_system", "1");
+    if (page) params.set("page", page);
+    return params;
+}
+
+async function searchTags(signal) {
+    try {
+        const opts = signal ? { signal } : {};
+        const resp = await apiFetch("/api/tags?" + _tagSearchParams().toString(), opts);
+        const data = await resp.json();
+        if (data.error) { showToast(data.error, "error"); return; }
+        renderTagResults(data);
+        _saveRecentSearch("tags", document.getElementById("tagSearchInput").value.trim(), data.total || 0);
+    } catch (e) {
+        if (e.name === "AbortError") return;
+        showToast("Search failed: " + e.message, "error");
+    }
+}
+
+function clearTagFilters() {
+    document.getElementById("tagSearchInput").value = "";
+    document.getElementById("tagOwnership").value = "";
+    // silent clear — we call searchTags() ourselves below, no need
+    // for the MultiSelect's onChange to also fire it.
+    if (tagRuleTypeMs) tagRuleTypeMs.clear(true);
+    searchTags();
+}
+
+function toggleTagsReferences() {
+    const body = document.getElementById("tagsReferencesBody");
+    const toggle = document.getElementById("tagsRefToggle");
+    if (!body) return;
+    const collapsed = body.style.display === "none";
+    body.style.display = collapsed ? "" : "none";
+    if (toggle) toggle.textContent = collapsed ? "▾" : "▸";
+}
+
+function _tagCardHtml(t) {
+    const isSystem = t.tag_origin === "system";
+    const swatch = t.color ? `<span class="tag-swatch" style="background:${escapeHtml(t.color)};" title="${escapeHtml(t.color)}"></span>` : "";
+    const sysPill = isSystem ? `<span class="tag-system-pill" title="Qualys-provisioned system tag. Read-only — cannot be migrated or deleted."><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" style="vertical-align:-1px;"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg> SYSTEM</span>` : "";
+    const ruleType = t.rule_type ? `<span class="badge-pill">${escapeHtml(t.rule_type)}</span>` : "";
+    const desc = t.description ? escapeHtml(t.description.length > 120 ? t.description.substring(0, 120) + "…" : t.description) : "";
+    const childCount = t.child_count > 0
+        ? `<span class="tag-child-count" title="${t.child_count} child tag(s) — may use different rule types">${t.child_count} child${t.child_count === 1 ? "" : "ren"}</span>`
+        : "";
+    const parentName = t.parent_name
+        ? `<span class="tag-parent-ref" title="Child of ${escapeHtml(t.parent_name)}">↳ ${escapeHtml(t.parent_name)}</span>`
+        : "";
+    const originBadge = t.tag_origin && t.tag_origin !== "rule_based"
+        ? `<span class="tag-origin-badge tag-origin-${t.tag_origin}" title="Origin: ${t.tag_origin}">${t.tag_origin}</span>`
+        : "";
+    const selectChildrenBtn = (_tagSelectMode && t.child_count > 0)
+        ? `<button class="btn-sm btn-outline tag-card-select-children" onclick="event.stopPropagation();selectTagWithChildren(${t.tag_id})" title="Select this tag + all ${t.child_count} children">+ children</button>`
+        : "";
+    return `
+    <div class="tag-card${isSystem ? ' tag-card-system' : ''}" onclick="showTagDetail(${t.tag_id})">
+        <div class="tag-card-header">
+            ${swatch}
+            <span class="tag-card-title">${escapeHtml(t.name || "")}</span>
+            ${sysPill}
+        </div>
+        ${desc ? `<div class="tag-card-desc">${desc}</div>` : ""}
+        <div class="tag-card-meta">
+            <span class="tag-id">#${t.tag_id}</span>
+            ${ruleType}
+            ${originBadge}
+            ${parentName}
+            ${childCount}
+            ${selectChildrenBtn}
+        </div>
+    </div>`;
+}
+
+function _tagTreeNodeHtml(t, childrenOf) {
+    const hasChildren = t.child_count > 0;
+
+    if (!hasChildren) {
+        return _tagCardHtml(t);
+    }
+
+    // This tag is a parent — render as collapsible group.
+    // Always use "load on expand" for children so we get the complete
+    // set from the DB regardless of pagination.
+    const totalChildren = t.child_count;
+
+    return `<div class="tag-tree-group collapsed">
+        <div class="tag-tree-header" onclick="expandTagTreeNode(this, ${t.tag_id})">
+            <svg class="tag-tree-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+            <span class="tag-tree-parent-name">${t.color ? `<span class="tag-swatch" style="background:${escapeHtml(t.color)};"></span>` : ""}${escapeHtml(t.name || "")}</span>
+            <span class="muted-small">${totalChildren} child${totalChildren === 1 ? "" : "ren"}</span>
+            <span class="tag-id">#${t.tag_id}</span>
+            ${_tagSelectMode ? `<button class="btn-sm btn-outline tag-tree-select-children" onclick="event.stopPropagation();selectTagWithChildren(${t.tag_id})" title="Select this tag and all children">Select all</button>` : ""}
+        </div>
+        <div class="tag-tree-body-wrap" id="tag-tree-body-${t.tag_id}">
+            <div class="tag-tree-parent-card">${_tagCardHtml(t)}</div>
+            <div class="tag-tree-children" id="tag-tree-children-${t.tag_id}"></div>
+        </div>
+    </div>`;
+}
+
+function expandTagTreeNode(headerEl, tagId) {
+    const group = headerEl.parentElement;
+    const wasCollapsed = group.classList.contains("collapsed");
+    group.classList.toggle("collapsed");
+
+    // Load children on first expand
+    if (wasCollapsed) {
+        const childrenEl = document.getElementById("tag-tree-children-" + tagId);
+        if (childrenEl && childrenEl.children.length === 0) {
+            loadTagChildren(tagId, null);
+        }
+    }
+}
+
+async function loadTagChildren(parentId, btn) {
+    const childrenEl = document.getElementById("tag-tree-children-" + parentId);
+    if (!childrenEl) return;
+
+    // Show loading indicator
+    const loadingId = "tag-tree-loading-" + parentId;
+    if (!document.getElementById(loadingId)) {
+        childrenEl.insertAdjacentHTML("beforeend",
+            `<div id="${loadingId}" class="tag-tree-loading"><span class="tag-export-progress">Loading children…</span></div>`
+        );
+    }
+    if (btn) btn.disabled = true;
+
+    try {
+        const resp = await apiFetch(`/api/tags?parent_tag_id=${parentId}&per_page=500`);
+        const data = await resp.json();
+        const children = data.results || [];
+
+        // Remove loading indicator
+        const loader = document.getElementById(loadingId);
+        if (loader) loader.remove();
+        if (btn) btn.remove();
+
+        if (children.length === 0) {
+            childrenEl.insertAdjacentHTML("beforeend",
+                '<div class="muted-small" style="padding:4px 0;">No children found.</div>'
+            );
+            return;
+        }
+
+        // Each child renders as its own node — sub-parents get their own
+        // collapsible group with load-on-expand.
+        const html = children.map(c => _tagTreeNodeHtml(c, {})).join("");
+        childrenEl.insertAdjacentHTML("beforeend", html);
+
+        // If select mode is active, add checkboxes to newly loaded cards
+        if (_tagSelectMode) _addTagCheckboxes();
+    } catch (e) {
+        const loader = document.getElementById(loadingId);
+        if (loader) loader.innerHTML = '<span class="muted-small" style="color:var(--danger);">Failed to load children.</span>';
+        if (btn) btn.disabled = false;
+    }
+}
+
+function _hasActiveTagFilters() {
+    const q = (document.getElementById("tagSearchInput").value || "").trim();
+    const ruleTypes = tagRuleTypeMs ? tagRuleTypeMs.getValues() : [];
+    const ownership = document.getElementById("tagOwnership").value;
+    return !!(q || ruleTypes.length || ownership);
+}
+
+function renderTagResults(data) {
+    const container = document.getElementById("tagResults");
+    const items = data.results || [];
+    updateCountBadge("tag", data.total || 0);
+    if (items.length === 0) {
+        container.innerHTML = '<div class="empty-state"><p>No tags found. Sync Tags in Settings or adjust your filters.</p></div>';
+        document.getElementById("tagPagination").style.display = "none";
+        return;
+    }
+
+    const filtersActive = _hasActiveTagFilters();
+
+    if (filtersActive) {
+        // Flat view — show only matching tags as cards, no tree expansion.
+        // Child count still shows on each card for context.
+        container.innerHTML = items.map(t => _tagCardHtml(t)).join("");
+    } else {
+        // Tree view — group by parent-child, collapsible on expand.
+        const byId = new Set(items.map(t => t.tag_id));
+        const topLevel = items.filter(t => !t.parent_tag_id || !byId.has(t.parent_tag_id));
+        container.innerHTML = topLevel.map(t => _tagTreeNodeHtml(t, {})).join("");
+    }
+
+    _tagTotalCount = data.total || 0;
+    renderPagination("tag", data);
+    // If select mode is active, re-add checkboxes (preserves selections across pages)
+    if (_tagSelectMode) {
+        _addTagCheckboxes();
+        _updateTagSelectCount();
+    }
+}
+
+// ─── Tag Select/Export Mode ──────────────────────────────────────────────
+let _tagSelectMode = false;
+let _tagSelected = new Set();      // individual tag ids selected
+let _tagSelectAllMode = false;     // "all tags" selected (across all pages)
+let _tagTotalCount = 0;            // total tags from last search
+
+function toggleTagSelectMode() {
+    _tagSelectMode = !_tagSelectMode;
+    const toolbar = document.getElementById("tagExportToolbar");
+    const btn = document.getElementById("tagSelectModeBtn");
+    if (_tagSelectMode) {
+        toolbar.style.display = "flex";
+        btn.classList.add("active");
+        _tagSelected.clear();
+        _tagSelectAllMode = false;
+        document.getElementById("tagSelectAll").checked = false;
+        _updateTagSelectCount();
+        // Re-render results so tree headers and cards get the select buttons
+        searchTags();
+    } else {
+        toolbar.style.display = "none";
+        btn.classList.remove("active");
+        _tagSelected.clear();
+        _tagSelectAllMode = false;
+        document.getElementById("tagSelectAll").checked = false;
+        _removeTagCheckboxes();
+        // Re-render to remove select buttons
+        searchTags();
+    }
+}
+
+function _addTagCheckboxes() {
+    document.querySelectorAll("#tagResults .tag-card").forEach(card => {
+        if (card.querySelector(".tag-select-cb")) return;
+        const tagId = _extractTagIdFromCard(card);
+        if (!tagId) return;
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.className = "tag-select-cb";
+        cb.checked = _tagSelectAllMode || _tagSelected.has(tagId);
+        cb.onclick = function(e) {
+            e.stopPropagation();
+            if (this.checked) {
+                _tagSelected.add(tagId);
+            } else {
+                _tagSelected.delete(tagId);
+                // If we uncheck one while "all" is active, switch to individual mode
+                if (_tagSelectAllMode) {
+                    _tagSelectAllMode = false;
+                    document.getElementById("tagSelectAll").checked = false;
+                    // Add all currently visible tags to the set (minus this one)
+                    document.querySelectorAll("#tagResults .tag-card").forEach(c => {
+                        const id = _extractTagIdFromCard(c);
+                        if (id && id !== tagId) _tagSelected.add(id);
+                    });
+                }
+            }
+            _updateTagSelectCount();
+        };
+        card.style.position = "relative";
+        card.insertBefore(cb, card.firstChild);
+    });
+}
+
+function _removeTagCheckboxes() {
+    document.querySelectorAll("#tagResults .tag-select-cb").forEach(cb => cb.remove());
+}
+
+function _extractTagIdFromCard(card) {
+    const idEl = card.querySelector(".tag-id");
+    if (!idEl) return null;
+    const m = idEl.textContent.match(/#(\d+)/);
+    return m ? parseInt(m[1]) : null;
+}
+
+async function selectTagWithChildren(parentId) {
+    // Select the parent + all its children (recursive) from the API
+    _tagSelected.add(parentId);
+    try {
+        const resp = await apiFetch(`/api/tags?parent_tag_id=${parentId}&per_page=500`);
+        const data = await resp.json();
+        const children = data.results || [];
+        for (const c of children) {
+            _tagSelected.add(c.tag_id);
+            // If child is also a parent, recursively select its children too
+            if (c.child_count > 0) {
+                await selectTagWithChildren(c.tag_id);
+            }
+        }
+    } catch (e) {
+        // Best effort — at minimum the parent is selected
+    }
+    // Update checkboxes on visible cards
+    document.querySelectorAll("#tagResults .tag-select-cb").forEach(cb => {
+        const card = cb.closest(".tag-card");
+        const tagId = _extractTagIdFromCard(card);
+        if (tagId && _tagSelected.has(tagId)) cb.checked = true;
+    });
+    _updateTagSelectCount();
+    showToast(`Selected tag #${parentId} + children (${_tagSelected.size} total)`, "info");
+}
+
+function toggleTagSelectAll(checked) {
+    _tagSelectAllMode = checked;
+    if (checked) {
+        // Select all — don't just select visible, mark the "all" flag
+        _tagSelected.clear();
+        document.querySelectorAll("#tagResults .tag-select-cb").forEach(cb => {
+            cb.checked = true;
+        });
+    } else {
+        // Deselect all
+        _tagSelected.clear();
+        document.querySelectorAll("#tagResults .tag-select-cb").forEach(cb => {
+            cb.checked = false;
+        });
+    }
+    _updateTagSelectCount();
+}
+
+function _updateTagSelectCount() {
+    const countEl = document.getElementById("tagSelectCount");
+    const exportBtn = document.getElementById("tagExportBtn");
+    const migrateBtn = document.getElementById("tagMigrateBtn");
+    const deleteBtn = document.getElementById("tagDeleteLocalBtn");
+    const deleteQualysBtn = document.getElementById("tagDeleteQualysBtn");
+    const count = _tagSelectAllMode ? _tagTotalCount : _tagSelected.size;
+    countEl.textContent = _tagSelectAllMode
+        ? `All ${_tagTotalCount} tags selected`
+        : `${_tagSelected.size} selected`;
+    const empty = count === 0;
+    exportBtn.disabled = empty;
+    migrateBtn.disabled = empty;
+    deleteBtn.disabled = empty;
+    deleteQualysBtn.disabled = empty;
+}
+
+async function _getSelectedTagIds() {
+    // If "select all" mode, fetch all tag ids from the local DB
+    // using pagination (API caps at 500 per page)
+    if (_tagSelectAllMode) {
+        try {
+            const allIds = [];
+            let page = 1;
+            while (true) {
+                const params = new URLSearchParams();
+                params.set("per_page", "500");
+                params.set("page", page);
+                const resp = await apiFetch("/api/tags?" + params.toString());
+                const data = await resp.json();
+                if (data.error) {
+                    console.error("_getSelectedTagIds error:", data.error);
+                    break;
+                }
+                const results = data.results || [];
+                for (const t of results) allIds.push(t.tag_id);
+                if (page >= (data.pages || 1)) break;
+                page++;
+            }
+            return allIds;
+        } catch (e) {
+            console.error("_getSelectedTagIds exception:", e);
+            return [];
+        }
+    }
+    return Array.from(_tagSelected);
+}
+
+async function exportSelectedTagsToJson() {
+    const btn = document.getElementById("tagExportBtn");
+    btn.disabled = true;
+    const countEl = document.getElementById("tagSelectCount");
+    const origCount = countEl.textContent;
+    countEl.innerHTML = `<span class="tag-export-progress">Preparing export…</span>`;
+
+    try {
+        // Build the tag_ids param — use 'all' if select-all mode, otherwise individual ids
+        let idsParam;
+        if (_tagSelectAllMode) {
+            idsParam = "all";
+        } else {
+            const tagIds = Array.from(_tagSelected);
+            if (tagIds.length === 0) return;
+            idsParam = tagIds.join(",");
+        }
+
+        // Direct download from local DB — no Qualys API calls needed
+        const resp = await apiFetch("/api/tags/export-local?tag_ids=" + idsParam);
+        const blob = await resp.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `tags-export-${new Date().toISOString().slice(0, 10)}.json`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+
+        showToast("Tags exported to JSON", "success");
+        toggleTagSelectMode();
+    } catch (e) {
+        showToast("Export failed: " + e.message, "error");
+    } finally {
+        countEl.textContent = origCount;
+        btn.disabled = false;
+        btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Export to JSON';
+    }
+}
+
+async function deleteSelectedTagsLocal() {
+    const count = _tagSelectAllMode ? _tagTotalCount : _tagSelected.size;
+    if (count === 0) return;
+
+    const confirmMsg = _tagSelectAllMode
+        ? `Delete ALL ${_tagTotalCount} locally synced tags? This only removes them from the local cache — not from Qualys. You can re-sync them anytime.`
+        : `Delete ${_tagSelected.size} selected tag(s) from local cache? This does not affect Qualys. You can re-sync them anytime.`;
+    if (!await themedConfirm(confirmMsg)) return;
+
+    const btn = document.getElementById("tagDeleteLocalBtn");
+    btn.disabled = true;
+    btn.textContent = "Deleting…";
+
+    try {
+        const body = _tagSelectAllMode
+            ? { tag_ids: "all" }
+            : { tag_ids: Array.from(_tagSelected) };
+
+        const resp = await apiFetch("/api/tags/delete-local", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+        });
+        const result = await resp.json();
+        if (result.error) {
+            showToast(result.error, "error");
+        } else {
+            showToast(`Deleted ${result.deleted} tag(s) from local cache`, "success");
+            toggleTagSelectMode();
+            searchTags();
+        }
+    } catch (e) {
+        showToast("Delete failed: " + e.message, "error");
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg> Delete local';
+    }
+}
+
+async function deleteSelectedTagsFromQualys() {
+    let tagIds = await _getSelectedTagIds();
+    if (tagIds.length === 0) return;
+
+    // Pre-filter: only user-created tags can be deleted from Qualys.
+    // Fetch details to filter out system tags client-side before even asking.
+    const btn = document.getElementById("tagDeleteQualysBtn");
+    btn.disabled = true;
+    btn.textContent = "Checking tags…";
+
+    let userTagIds = [];
+    let systemSkipped = 0;
+    try {
+        // Check each tag's is_user_created status from the local DB
+        for (let i = 0; i < tagIds.length; i += 500) {
+            const batch = tagIds.slice(i, i + 500);
+            const resp = await apiFetch("/api/tags?" + new URLSearchParams({per_page: "500", page: "1"}).toString());
+            const data = await resp.json();
+            const allTags = data.results || [];
+            const tagMap = {};
+            for (const t of allTags) tagMap[t.tag_id] = t;
+            for (const id of batch) {
+                const t = tagMap[id];
+                if (t && t.tag_origin === "system") systemSkipped++;
+                else userTagIds.push(id);
+            }
+        }
+    } catch (e) {
+        // If check fails, proceed with all and let backend filter
+        userTagIds = tagIds;
+    }
+
+    if (userTagIds.length === 0) {
+        showToast(`All ${tagIds.length} selected tags are system/Qualys-managed and cannot be deleted.`, "warning");
+        btn.disabled = false;
+        btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg> Delete from Qualys';
+        return;
+    }
+
+    const skipNote = systemSkipped > 0 ? `\n\n(${systemSkipped} system tags will be skipped automatically.)` : "";
+    const confirmMsg = `⚠️ DESTRUCTIVE ACTION\n\nThis will permanently delete ${userTagIds.length} user-created tag(s) from your Qualys subscription AND from the local cache.${skipNote}\n\nThis cannot be undone. Continue?`;
+    if (!await themedConfirm(confirmMsg)) {
+        btn.disabled = false;
+        btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg> Delete from Qualys';
+        return;
+    }
+
+    btn.textContent = `Deleting ${userTagIds.length} tag(s)…`;
+    tagIds = userTagIds;
+
+    const auth = getApiAuth();
+    try {
+        const resp = await apiFetch("/api/tags/delete-qualys", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                tag_ids: tagIds,
+                credential_id: auth.credential_id || undefined,
+                platform: auth.platform || undefined,
+            }),
+        });
+        const result = await resp.json();
+        if (result.error) {
+            showToast(result.error, "error");
+            return;
+        }
+
+        // Show results
+        let msg = `Deleted ${result.deleted_count} tag(s) from Qualys`;
+        if (result.skipped_count) msg += `, ${result.skipped_count} skipped (system)`;
+        if (result.failed_count) msg += `, ${result.failed_count} failed`;
+        showToast(msg, result.failed_count ? "warning" : "success");
+
+        // Show detailed results if failures
+        if (result.failed_count > 0) {
+            const details = result.failed.map(f =>
+                `#${f.tag_id} ${f.name || ""}: ${f.reason}`
+            ).join("\n");
+            console.warn("Tag deletion failures:\n" + details);
+        }
+
+        toggleTagSelectMode();
+        searchTags();
+    } catch (e) {
+        showToast("Delete from Qualys failed: " + e.message, "error");
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg> Delete from Qualys';
+    }
+}
+
+let _tagMigrateAuditPassed = false;
+
+async function importTagsFromJsonFile(input) {
+    const file = input.files[0];
+    input.value = "";  // reset so same file can be re-selected
+    if (!file) return;
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    try {
+        const resp = await apiFetch("/api/tags/import-local", {
+            method: "POST",
+            body: formData,
+        });
+        const result = await resp.json();
+        if (result.error) {
+            showToast(result.error, "error");
+            return;
+        }
+        showToast(
+            `Imported ${result.imported} tag(s) from ${file.name}` +
+            (result.skipped ? ` (${result.skipped} skipped)` : ""),
+            "success"
+        );
+        searchTags();
+    } catch (e) {
+        showToast("Import failed: " + e.message, "error");
+    }
+}
+
+let _tagMigrateTagIds = null; // cached tag IDs for migration
+
+async function openTagMigrateModal() {
+    const count = _tagSelectAllMode ? _tagTotalCount : _tagSelected.size;
+    if (count === 0) {
+        showToast("No tags selected", "error");
+        return;
+    }
+
+    // Pre-fetch the tag IDs now (while select mode is still active)
+    _tagMigrateTagIds = await _getSelectedTagIds();
+
+    // Fallback: if select-all mode but fetch returned empty,
+    // grab IDs from the currently visible page cards
+    if (_tagMigrateTagIds.length === 0 && _tagSelectAllMode) {
+        // Try getting all visible tag IDs from the DOM
+        const visibleIds = [];
+        document.querySelectorAll("#tagResults .tag-id").forEach(el => {
+            const m = el.textContent.match(/#(\d+)/);
+            if (m) visibleIds.push(parseInt(m[1]));
+        });
+        if (visibleIds.length > 0) {
+            _tagMigrateTagIds = visibleIds;
+        }
+    }
+
+    if (_tagMigrateTagIds.length === 0) {
+        showToast("Could not determine selected tags — try selecting individually", "error");
+        return;
+    }
+
+    _tagMigrateAuditPassed = false;
+    document.getElementById("tagMigrateResults").style.display = "none";
+    document.getElementById("tagMigrateResults").innerHTML = "";
+    document.getElementById("tagMigrateAuditWarning").style.display = "none";
+    document.getElementById("tagMigrateAuditWarning").innerHTML = "";
+    document.getElementById("tagMigrateGoBtn").disabled = false;
+
+    // Build origin breakdown so user can include/exclude by category
+    await _buildMigrateOriginBreakdown();
+    _updateMigrateSummaryFromOrigin();
+    // Set default parent name with today's date
+    const today = new Date().toISOString().slice(0, 10);
+    document.getElementById("tagMigrateParentName").value = `TAGs Imported ${today}`;
+    document.getElementById("tagMigrateCreateParent").checked = false;
+    // Populate destination credential dropdown
+    try {
+        const resp = await apiFetch("/api/credentials");
+        const creds = await resp.json();
+        const sel = document.getElementById("tagMigrateDestCred");
+        sel.innerHTML = '<option value="">— Select Destination —</option>'
+            + (Array.isArray(creds) ? creds.map(c =>
+                `<option value="${c.id}" data-platform="${c.platform_id || ""}">${escapeHtml(formatCredLabel(c))}</option>`
+            ).join("") : "");
+    } catch (e) {}
+    // Run audit pre-check
+    _runMigrateAuditCheck();
+    openModal("tagMigrateModal");
+}
+
+async function _runMigrateAuditCheck() {
+    const warningEl = document.getElementById("tagMigrateAuditWarning");
+    try {
+        const resp = await apiFetch("/api/tags/audit");
+        const data = await resp.json();
+        const total = (data.summary && data.summary.total) || 0;
+        if (total === 0) {
+            _tagMigrateAuditPassed = true;
+            return;
+        }
+        // Show warning
+        const errors = data.summary.error || 0;
+        const warns = data.summary.warn || 0;
+        warningEl.style.display = "block";
+        warningEl.innerHTML = `
+            <div class="migrate-audit-warning">
+                <div class="migrate-audit-warning-header">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                    <strong>Tag audit found issues</strong>
+                </div>
+                <p class="muted-small" style="margin:6px 0;">
+                    Your local tag inventory has ${errors ? `<strong>${errors} error(s)</strong>` : ""}${errors && warns ? " and " : ""}${warns ? `<strong>${warns} warning(s)</strong>` : ""}
+                    (e.g. duplicate names, duplicate rules, hierarchy problems).
+                    Migrating tags with issues may replicate problems into the destination environment.
+                </p>
+                <div style="display:flex;gap:8px;margin-top:8px;">
+                    <button class="btn-sm btn-outline" onclick="closeModal('tagMigrateModal');switchTagSubTab('audit');runTagAudit();">
+                        Review in Audit tab
+                    </button>
+                    <button class="btn-sm btn-outline" onclick="_dismissMigrateAuditWarning()">
+                        Ignore and proceed
+                    </button>
+                </div>
+            </div>`;
+        // Disable migrate button until they dismiss
+        document.getElementById("tagMigrateGoBtn").disabled = true;
+    } catch (e) {
+        // If audit fails, allow migration anyway
+        _tagMigrateAuditPassed = true;
+    }
+}
+
+function _dismissMigrateAuditWarning() {
+    _tagMigrateAuditPassed = true;
+    document.getElementById("tagMigrateAuditWarning").style.display = "none";
+    document.getElementById("tagMigrateGoBtn").disabled = false;
+}
+
+let _tagMigrateOriginData = {}; // {origin: [{tag_id, name}, ...]}
+
+async function _buildMigrateOriginBreakdown() {
+    const container = document.getElementById("tagMigrateOriginBreakdown");
+    if (!container || !_tagMigrateTagIds || _tagMigrateTagIds.length === 0) return;
+
+    // Fetch tag details in batches to get origin info
+    _tagMigrateOriginData = {};
+    const batchSize = 500;
+    for (let i = 0; i < _tagMigrateTagIds.length; i += batchSize) {
+        try {
+            const resp = await apiFetch("/api/tags?" + new URLSearchParams({per_page: "500", page: String(Math.floor(i / batchSize) + 1)}).toString());
+            const data = await resp.json();
+            for (const t of (data.results || [])) {
+                if (_tagMigrateTagIds.includes(t.tag_id)) {
+                    const origin = t.tag_origin || "static";
+                    if (!_tagMigrateOriginData[origin]) _tagMigrateOriginData[origin] = [];
+                    _tagMigrateOriginData[origin].push({tag_id: t.tag_id, name: t.name});
+                }
+            }
+        } catch (e) { break; }
+    }
+
+    const originMeta = {
+        rule_based: {label: "Rule-based tags", desc: "Have detection logic — portable to any subscription", cls: "green", default: true},
+        static:     {label: "Static tags", desc: "STATIC tags — no rule, used for grouping and hierarchy", cls: "blue", default: true},
+        connector:  {label: "Connector tags", desc: "Created by cloud connectors — need matching connector in destination", cls: "amber", default: false},
+    };
+
+    // System tags are always excluded — remove them from the pool entirely
+    const systemCount = (_tagMigrateOriginData["system"] || []).length;
+    delete _tagMigrateOriginData["system"];
+
+    let html = '<div class="migrate-origin-breakdown"><strong style="font-size:12px;">Select which tag types to include:</strong>';
+    for (const [origin, meta] of Object.entries(originMeta)) {
+        const tags = _tagMigrateOriginData[origin] || [];
+        if (tags.length === 0) continue;
+        const checked = meta.default ? "checked" : "";
+        const warning = origin === "connector" ? ' <span class="muted-small" style="color:var(--warning);">(review before including)</span>' : "";
+        html += `<label class="migrate-origin-row migrate-origin-${meta.cls}">
+            <input type="checkbox" data-origin="${origin}" ${checked} onchange="_updateMigrateSummaryFromOrigin()">
+            <span class="migrate-origin-label">
+                <strong>${meta.label}</strong> (${tags.length})${warning}
+                <span class="migrate-origin-desc">${meta.desc}</span>
+            </span>
+        </label>`;
+    }
+    if (systemCount > 0) {
+        html += `<div class="migrate-origin-row migrate-origin-gray" style="cursor:default;">
+            <span class="migrate-origin-label">
+                <strong>System tags</strong> (${systemCount}) — automatically excluded
+                <span class="migrate-origin-desc">Qualys-managed tags already exist in every subscription</span>
+            </span>
+        </div>`;
+    }
+    html += '</div>';
+    container.innerHTML = html;
+    container.style.display = "block";
+}
+
+function _updateMigrateSummaryFromOrigin() {
+    // Count how many tags will be migrated based on checked origins
+    let total = 0;
+    document.querySelectorAll("#tagMigrateOriginBreakdown input[data-origin]").forEach(cb => {
+        if (cb.checked) {
+            const origin = cb.dataset.origin;
+            total += (_tagMigrateOriginData[origin] || []).length;
+        }
+    });
+    document.getElementById("tagMigrateSummary").textContent = `${total} tag(s) will be migrated.`;
+    const btn = document.getElementById("tagMigrateGoBtn");
+    if (btn) btn.disabled = total === 0;
+}
+
+function _getFilteredMigrateTagIds() {
+    // Return only tag IDs for checked origins
+    const ids = [];
+    document.querySelectorAll("#tagMigrateOriginBreakdown input[data-origin]").forEach(cb => {
+        if (cb.checked) {
+            const origin = cb.dataset.origin;
+            for (const t of (_tagMigrateOriginData[origin] || [])) {
+                ids.push(t.tag_id);
+            }
+        }
+    });
+    // If no origin breakdown was built (e.g. fetch failed), use all
+    return ids.length > 0 ? ids : (_tagMigrateTagIds || []);
+}
+
+let _migrateRenames = {};   // {tag_id: "new name"}
+let _migrateSkipIds = [];   // [tag_id, ...]
+
+async function executeTagMigration() {
+    if (!_tagMigrateAuditPassed) {
+        showToast("Please review or dismiss the audit warnings first", "warning");
+        return;
+    }
+
+    const sel = document.getElementById("tagMigrateDestCred");
+    const destCredId = sel.value;
+    if (!destCredId) { showToast("Select a destination credential", "error"); return; }
+    const destPlatform = sel.options[sel.selectedIndex]?.dataset.platform || "";
+
+    const createParent = document.getElementById("tagMigrateCreateParent").checked;
+    const parentName = document.getElementById("tagMigrateParentName").value.trim();
+
+    const tagIds = _getFilteredMigrateTagIds();
+    if (tagIds.length === 0) { showToast("No tags selected — check the origin categories above", "error"); return; }
+
+    const btn = document.getElementById("tagMigrateGoBtn");
+    btn.disabled = true;
+    const resultsEl = document.getElementById("tagMigrateResults");
+    resultsEl.style.display = "block";
+
+    // Step 1: Pre-flight collision check
+    btn.textContent = "Checking for name collisions…";
+    resultsEl.innerHTML = '<span class="tag-export-progress">Checking destination for existing tag names…</span>';
+    _migrateRenames = {};
+    _migrateSkipIds = [];
+
+    const auth = getApiAuth();
+    try {
+        const preResp = await apiFetch("/api/tags/migrate-preflight", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                tag_ids: tagIds,
+                dest_credential_id: destCredId,
+                dest_platform: destPlatform,
+            }),
+        });
+        const preflight = await preResp.json();
+        const collisions = preflight.collisions || [];
+
+        if (collisions.length > 0) {
+            // Show collision resolution UI and wait for user
+            const proceed = await _showCollisionResolution(collisions);
+            if (!proceed) {
+                btn.disabled = false;
+                btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/><polyline points="12 5 19 12 12 19"/></svg> Migrate';
+                return;
+            }
+        }
+
+        // Step 2: Start migration
+        btn.textContent = `Starting migration…`;
+        resultsEl.innerHTML = '<span class="tag-export-progress">Starting migration…</span>';
+
+        const resp = await apiFetch("/api/tags/migrate-direct", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                tag_ids: tagIds,
+                source_credential_id: auth.credential_id || undefined,
+                source_platform: auth.platform || undefined,
+                dest_credential_id: destCredId,
+                dest_platform: destPlatform,
+                create_parent: createParent,
+                parent_name: parentName || undefined,
+                renames: _migrateRenames,
+                skip_ids: _migrateSkipIds,
+            }),
+        });
+        const startResult = await resp.json();
+        if (startResult.error) {
+            resultsEl.innerHTML = `<div style="color:var(--danger);font-weight:600;">Migration failed to start</div>
+                <div class="muted-small">${escapeHtml(startResult.error)}</div>`;
+            document.getElementById("tagMigrateSummary").textContent = "Error — see details below.";
+            btn.disabled = false;
+            btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/><polyline points="12 5 19 12 12 19"/></svg> Migrate';
+            return;
+        }
+
+        // Poll for progress
+        const jobId = startResult.job_id;
+        _pollMigrationProgress(jobId);
+    } catch (e) {
+        resultsEl.innerHTML = `<div style="color:var(--danger);font-weight:600;">Migration failed</div>
+            <div class="muted-small">${escapeHtml(e.message)}</div>`;
+        document.getElementById("tagMigrateSummary").textContent = "Error";
+        btn.disabled = false;
+        btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/><polyline points="12 5 19 12 12 19"/></svg> Migrate';
+    }
+}
+
+function _showCollisionResolution(collisions) {
+    return new Promise(resolve => {
+        const resultsEl = document.getElementById("tagMigrateResults");
+        let html = `<div class="migrate-collision-panel">
+            <div style="font-weight:600;margin-bottom:8px;color:var(--warning);">
+                ${collisions.length} tag name${collisions.length > 1 ? "s" : ""} already exist in the destination
+            </div>
+            <p class="muted-small" style="margin:0 0 12px 0;">Choose how to handle each collision. Renamed tags will be created with the new name. Skipped tags won't be migrated.</p>
+            <div style="margin-bottom:10px;">
+                <button class="btn-sm btn-outline" onclick="_collisionSkipAll()">Skip all collisions</button>
+                <button class="btn-sm btn-outline" onclick="_collisionRenameAll()">Rename all with (migrated) suffix</button>
+            </div>
+            <div class="migrate-collision-list">`;
+
+        for (const c of collisions) {
+            html += `<div class="migrate-collision-row" data-tid="${c.tag_id}">
+                <div class="migrate-collision-name">
+                    <strong>${escapeHtml(c.name)}</strong>
+                    <span class="muted-small">exists as #${c.dest_tag_id} in destination</span>
+                </div>
+                <div class="migrate-collision-actions">
+                    <select class="migrate-collision-action" data-tid="${c.tag_id}" onchange="_onCollisionActionChange(this)">
+                        <option value="rename">Rename</option>
+                        <option value="skip">Skip</option>
+                    </select>
+                    <input type="text" class="migrate-collision-rename-input" data-tid="${c.tag_id}"
+                           value="${escapeHtml(c.name)} (migrated)" style="font-size:12px;width:200px;">
+                </div>
+            </div>`;
+        }
+
+        html += `</div>
+            <div style="margin-top:12px;display:flex;gap:8px;">
+                <button class="btn-sm btn-primary" id="_collisionProceed">Proceed with migration</button>
+                <button class="btn-sm btn-outline" id="_collisionCancel">Cancel</button>
+            </div>
+        </div>`;
+
+        resultsEl.innerHTML = html;
+
+        document.getElementById("_collisionProceed").onclick = () => {
+            // Gather decisions
+            _migrateRenames = {};
+            _migrateSkipIds = [];
+            document.querySelectorAll(".migrate-collision-action").forEach(sel => {
+                const tid = sel.dataset.tid;
+                if (sel.value === "skip") {
+                    _migrateSkipIds.push(parseInt(tid));
+                } else {
+                    const input = document.querySelector(`.migrate-collision-rename-input[data-tid="${tid}"]`);
+                    if (input && input.value.trim()) {
+                        _migrateRenames[tid] = input.value.trim();
+                    }
+                }
+            });
+            resolve(true);
+        };
+        document.getElementById("_collisionCancel").onclick = () => resolve(false);
+    });
+}
+
+function _onCollisionActionChange(sel) {
+    const tid = sel.dataset.tid;
+    const input = document.querySelector(`.migrate-collision-rename-input[data-tid="${tid}"]`);
+    if (input) input.style.display = sel.value === "rename" ? "" : "none";
+}
+
+function _collisionSkipAll() {
+    document.querySelectorAll(".migrate-collision-action").forEach(sel => {
+        sel.value = "skip";
+        _onCollisionActionChange(sel);
+    });
+}
+
+function _collisionRenameAll() {
+    document.querySelectorAll(".migrate-collision-action").forEach(sel => {
+        sel.value = "rename";
+        _onCollisionActionChange(sel);
+    });
+}
+
+let _migrationPollRetries = 0;
+
+async function _pollMigrationProgress(jobId) {
+    const resultsEl = document.getElementById("tagMigrateResults");
+    const summaryEl = document.getElementById("tagMigrateSummary");
+    const btn = document.getElementById("tagMigrateGoBtn");
+    _migrationPollRetries = 0;
+
+    const poll = async () => {
+        try {
+            const resp = await fetch(`/api/tags/migrate-status?job_id=${jobId}`);
+            const s = await resp.json();
+            _migrationPollRetries = 0; // reset on success
+
+            if (s.status === "running") {
+                const pct = s.total > 0 ? Math.round((s.processed / s.total) * 100) : 0;
+                summaryEl.textContent = `Migrating… ${s.processed} / ${s.total} (${pct}%)`;
+                const progressBar = `<div class="migrate-progress-bar"><div class="migrate-progress-fill" style="width:${pct}%"></div></div>`;
+                resultsEl.innerHTML = `${progressBar}
+                    <div class="tag-export-progress" style="margin-top:8px;">Processing tag #${s.current_tag || "…"}</div>
+                    <div class="muted-small" style="margin-top:6px;">
+                        <span style="color:var(--success);">✓ ${s.migrated.length} migrated</span> ·
+                        <span>— ${s.skipped.length} skipped</span> ·
+                        <span style="color:var(--danger);">✗ ${s.failed.length} failed</span>
+                    </div>`;
+                setTimeout(poll, 1500);
+                return;
+            }
+
+            // Done or error — render full report
+            _renderMigrationReport(s, resultsEl, summaryEl);
+
+        } catch (e) {
+            _migrationPollRetries++;
+            if (_migrationPollRetries < 10) {
+                // Retry — might be a transient auth issue
+                setTimeout(poll, 3000);
+                summaryEl.textContent = `Reconnecting… (attempt ${_migrationPollRetries})`;
+                return;
+            }
+            resultsEl.innerHTML = `<div class="muted-small">Lost connection after ${_migrationPollRetries} retries.
+                The migration may still be running in the background.
+                <button class="btn-sm btn-outline" style="margin-top:8px;" onclick="_pollMigrationProgress('${jobId}')">Retry now</button></div>`;
+            summaryEl.textContent = "Connection lost — migration may still be running.";
+        }
+        btn.disabled = false;
+        btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/><polyline points="12 5 19 12 12 19"/></svg> Migrate';
+    };
+    setTimeout(poll, 1000);
+}
+
+function _renderMigrationReport(s, resultsEl, summaryEl) {
+    if (s.status === "error") {
+        resultsEl.innerHTML = `<div style="color:var(--danger);font-weight:600;margin-bottom:8px;">Migration failed</div>
+            <div class="muted-small">${escapeHtml(s.error || "Unknown error")}</div>`;
+        summaryEl.textContent = "Error — see details below.";
+        showToast("Migration failed", "error");
+        return;
+    }
+
+    // Build detailed report
+    let html = "";
+    if (s.completed_at) {
+        html += `<p class="muted-small" style="margin:0 0 10px 0;">Completed: ${new Date(s.completed_at).toLocaleString()}</p>`;
+    }
+    if (s.parent_tag_id) {
+        html += `<p class="muted-small" style="margin:0 0 8px 0;">Parent tag created: <strong>${escapeHtml(s.parent_name || "")}</strong> (#${s.parent_tag_id})</p>`;
+    }
+
+    // Summary bar
+    const mc = s.migrated_count || 0, sc = s.skipped_count || 0, fc = s.failed_count || 0;
+    html += `<div class="migrate-report-summary">
+        <span class="migrate-report-stat green">${mc} Migrated</span>
+        <span class="migrate-report-stat gray">${sc} Skipped</span>
+        <span class="migrate-report-stat ${fc > 0 ? "red" : "gray"}">${fc} Failed</span>
+    </div>`;
+
+    // Migrated section
+    if (s.migrated && s.migrated.length) {
+        html += `<details class="migrate-report-section" ${fc === 0 ? "open" : ""}>
+            <summary style="color:var(--success);font-weight:600;cursor:pointer;">✓ ${mc} Migrated Successfully</summary>
+            <div class="migrate-report-list">${s.migrated.map(m =>
+                `<div class="migrate-report-row">
+                    <span class="migrate-report-tag">${escapeHtml(m.name)}</span>
+                    <span class="muted-small">→ dest #${m.dest_tag_id} (${m.operation || "create"})</span>
+                </div>`
+            ).join("")}</div>
+        </details>`;
+    }
+
+    // Skipped section
+    if (s.skipped && s.skipped.length) {
+        html += `<details class="migrate-report-section">
+            <summary style="color:var(--text-2);font-weight:600;cursor:pointer;">— ${sc} Skipped (System Tags)</summary>
+            <div class="migrate-report-list">${s.skipped.map(sk =>
+                `<div class="migrate-report-row">
+                    <span class="migrate-report-tag">${escapeHtml(sk.name)}</span>
+                    <span class="muted-small">${escapeHtml(sk.reason)}</span>
+                </div>`
+            ).join("")}</div>
+        </details>`;
+    }
+
+    // Failed section — always open if there are failures
+    if (s.failed && s.failed.length) {
+        html += `<details class="migrate-report-section" open>
+            <summary style="color:var(--danger);font-weight:600;cursor:pointer;">✗ ${fc} Failed</summary>
+            <div class="migrate-report-list">${s.failed.map(f =>
+                `<div class="migrate-report-row migrate-report-failed">
+                    <span class="migrate-report-tag">#${f.tag_id} ${escapeHtml(f.name || "")}</span>
+                    <span class="migrate-report-reason">${escapeHtml(f.reason)}</span>
+                    ${f.operation ? `<span class="muted-small">(attempted: ${f.operation})</span>` : ""}
+                </div>`
+            ).join("")}</div>
+        </details>`;
+    }
+
+    resultsEl.innerHTML = html;
+    summaryEl.textContent = `Done — ${mc} migrated, ${sc} skipped, ${fc} failed.`;
+    if (mc > 0) showToast(`Migration complete: ${mc} tag(s) migrated`, fc > 0 ? "warning" : "success");
+    if (mc > 0) toggleTagSelectMode();
+}
+
+async function showTagDetail(id) {
+    try {
+        const resp = await apiFetch("/api/tags/" + id);
+        const t = await resp.json();
+        if (t.error) { showToast(t.error, "error"); return; }
+        document.getElementById("tagDetailTitle").textContent = "Tag #" + t.tag_id + " — " + (t.name || "");
+        const content = document.getElementById("tagDetailContent");
+        const isSystem = t.tag_origin === "system";
+        const isConnector = t.tag_origin === "connector";
+        const isEditable = !!t.is_editable;
+        let bannerHtml = "";
+        if (isSystem) {
+            bannerHtml = `<div class="tag-system-banner">
+                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+                 <span><strong>Qualys-provisioned system tag</strong>. This tag exists in every subscription and cannot be migrated or deleted.</span>
+               </div>`;
+        } else if (isConnector) {
+            bannerHtml = `<div class="tag-system-banner tag-system-banner-editable">
+                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+                 <span><strong>Connector-dependent tag</strong>. Created by or dependent on a cloud connector. Migration requires the destination to have a matching connector configured.</span>
+               </div>`;
+        }
+        const sysBanner = bannerHtml;
+        const breadcrumb = (t.breadcrumb && t.breadcrumb.length)
+            ? `<div class="tag-breadcrumb">${t.breadcrumb.map(b => `<a href="#" onclick="event.preventDefault();showTagDetail(${b.tag_id})">${escapeHtml(b.name)}</a>`).join(" / ")}<span> / ${escapeHtml(t.name || "")}</span></div>`
+            : "";
+        const swatch = t.color ? `<span class="tag-swatch" style="background:${escapeHtml(t.color)};display:inline-block;width:14px;height:14px;vertical-align:middle;border-radius:3px;margin-right:6px;"></span>` : "";
+
+        let html = sysBanner + breadcrumb + `<div class="detail-meta-grid">
+            <div class="detail-meta-item"><span class="detail-meta-label">Name</span><span class="detail-meta-value">${swatch}${escapeHtml(t.name || "—")}</span></div>
+            <div class="detail-meta-item"><span class="detail-meta-label">Rule Type</span><span class="detail-meta-value">${escapeHtml(t.rule_type || "—")}</span></div>
+            <div class="detail-meta-item"><span class="detail-meta-label">Color</span><span class="detail-meta-value">${escapeHtml(t.color || "—")}</span></div>
+            <div class="detail-meta-item"><span class="detail-meta-label">Criticality</span><span class="detail-meta-value">${t.criticality != null ? t.criticality : "—"}</span></div>
+            <div class="detail-meta-item"><span class="detail-meta-label">Created</span><span class="detail-meta-value">${escapeHtml(t.created || "—")}</span></div>
+            <div class="detail-meta-item"><span class="detail-meta-label">Modified</span><span class="detail-meta-value">${escapeHtml(t.modified || "—")}</span></div>
+            <div class="detail-meta-item"><span class="detail-meta-label">Created By</span><span class="detail-meta-value">${escapeHtml(t.created_by || "—")}</span></div>
+            <div class="detail-meta-item"><span class="detail-meta-label">Reserved Type</span><span class="detail-meta-value">${escapeHtml(t.reserved_type || "—")}</span></div>
+        </div>`;
+        if (t.description) html += `<div class="detail-section"><h4>Description</h4><div class="detail-content">${escapeHtml(t.description)}</div></div>`;
+        if (t.rule_text) html += `<div class="detail-section"><h4>Rule Logic</h4><pre class="tag-rule-text">${escapeHtml(t.rule_text)}</pre></div>`;
+        if (t.parent && t.parent.tag_id) {
+            html += `<div class="detail-section"><h4>Parent</h4><ul class="detail-ref-list"><li><a href="#" onclick="event.preventDefault();showTagDetail(${t.parent.tag_id})">${escapeHtml(t.parent.name || "Tag " + t.parent.tag_id)}</a></li></ul></div>`;
+        }
+        if (t.children && t.children.length) {
+            html += `<div class="detail-section"><h4>Children (${t.children.length})</h4><ul class="detail-ref-list">`;
+            html += t.children.map(c => {
+                const cIsSystem = !c.is_user_created;
+                const cPill = cIsSystem ? ' <span class="tag-system-pill-inline">SYSTEM</span>' : '';
+                const cSwatch = c.color ? `<span class="tag-swatch" style="background:${escapeHtml(c.color)};display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;"></span>` : "";
+                return `<li>${cSwatch}<a href="#" onclick="event.preventDefault();showTagDetail(${c.tag_id})">${escapeHtml(c.name || "Tag " + c.tag_id)}</a>${c.rule_type ? ` <span style="color:var(--text-2);font-size:11px;">(${escapeHtml(c.rule_type)})</span>` : ""}${cPill}</li>`;
+            }).join("");
+            html += `</ul></div>`;
+        }
+
+        // Classification override controls — let the operator correct
+        // misclassifications when the API metadata is ambiguous.
+        const autoLabel = t.is_user_created_auto ? "User-created" : "System";
+        const overrideVal = (t.classification_override || "").toLowerCase();
+        const effectiveLabel = t.is_user_created ? "User-created" : "System";
+        html += `<div class="detail-section"><h4>Classification</h4>
+            <div class="detail-meta-grid">
+                <div class="detail-meta-item">
+                    <span class="detail-meta-label">Auto (from API)</span>
+                    <span class="detail-meta-value">${autoLabel}</span>
+                </div>
+                <div class="detail-meta-item">
+                    <span class="detail-meta-label">Effective</span>
+                    <span class="detail-meta-value">${effectiveLabel}${overrideVal ? ' <span class="badge-pill" style="font-size:10px;">manual override</span>' : ''}</span>
+                </div>
+            </div>
+            <div style="display:flex;gap:8px;margin-top:10px;align-items:center;flex-wrap:wrap;">
+                <label class="detail-meta-label" style="margin:0;">Override:</label>
+                <select id="tagClassifyOverride_${t.tag_id}" onchange="setTagClassificationOverride(${t.tag_id}, this.value)" class="filter-select">
+                    <option value=""${overrideVal === "" ? " selected" : ""}>Auto (use API metadata)</option>
+                    <option value="user"${overrideVal === "user" ? " selected" : ""}>Force User-created</option>
+                    <option value="system"${overrideVal === "system" ? " selected" : ""}>Force System (read-only)</option>
+                </select>
+            </div>
+            <p class="muted-small" style="margin-top:8px;">If auto-classification is wrong for this tag, override it. Stored locally — does not affect Qualys.</p>
+        </div>`;
+
+        // Editability override — independent of system/user.
+        // Auto-derivation: user tags = editable; system tags whose
+        // reservedType is in the locked taxonomy (OS, region, etc.)
+        // = not editable; everything else = editable.
+        const editAuto = t.is_editable_auto ? "Editable" : "Locked";
+        const editOverrideVal = (t.editability_override || "").toLowerCase();
+        const editEffective = isEditable ? "Editable" : "Locked";
+        html += `<div class="detail-section"><h4>Editability</h4>
+            <div class="detail-meta-grid">
+                <div class="detail-meta-item">
+                    <span class="detail-meta-label">Auto (from API)</span>
+                    <span class="detail-meta-value">${editAuto}</span>
+                </div>
+                <div class="detail-meta-item">
+                    <span class="detail-meta-label">Effective</span>
+                    <span class="detail-meta-value">${editEffective}${editOverrideVal ? ' <span class="badge-pill" style="font-size:10px;">manual override</span>' : ''}</span>
+                </div>
+            </div>
+            <div style="display:flex;gap:8px;margin-top:10px;align-items:center;flex-wrap:wrap;">
+                <label class="detail-meta-label" style="margin:0;">Override:</label>
+                <select id="tagEditOverride_${t.tag_id}" onchange="setTagEditabilityOverride(${t.tag_id}, this.value)" class="filter-select">
+                    <option value=""${editOverrideVal === "" ? " selected" : ""}>Auto (use API metadata)</option>
+                    <option value="editable"${editOverrideVal === "editable" ? " selected" : ""}>Force Editable</option>
+                    <option value="locked"${editOverrideVal === "locked" ? " selected" : ""}>Force Locked</option>
+                </select>
+            </div>
+            <p class="muted-small" style="margin-top:8px;">Use Force Editable for system tags like Internet Facing Assets where customers customize the rule. Stored locally; the Qualys API still has the final say when edit support ships.</p>
+        </div>`;
+
+        // Phase 3 CRUD — Edit / Delete buttons gated on effective
+        // is_editable. The form modal handles validation, Test on
+        // Qualys preview, and Save. Locked tags get a hint pointing
+        // at the Force Editable override.
+        if (isEditable) {
+            html += `<div class="detail-section"><h4>Edit this tag</h4>
+                <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                    <button class="btn-sm" onclick="openTagEditForm(${t.tag_id})">Edit…</button>
+                    <button class="btn-sm btn-danger" onclick="openTagDeleteConfirm(${t.tag_id})">Delete tag</button>
+                </div>
+                <p class="muted-small" style="margin-top:8px;">Edits and deletes go straight to Qualys. Use the form's <strong>Test on Qualys</strong> button to preview rule changes against the asset universe before saving.</p>
+            </div>`;
+        } else {
+            html += `<div class="detail-section"><h4>Edit this tag</h4>
+                <p class="muted-small">Editing is disabled because this tag is currently classified as locked. If Qualys actually allows edits to it (some system tags like Internet Facing Assets do), set the editability override to <strong>Force Editable</strong> above and the Edit / Delete buttons will appear.</p>
+            </div>`;
+        }
+
+        // Phase 2 migration — Export pulls the tag's full JSON from
+        // the source environment and stages it locally. From there the
+        // operator can either download the file or upload it into a
+        // different Qualys environment via the Tags Migration card.
+        // System tags can't be migrated (Qualys rejects creates with
+        // reservedType set) so the section is informational for them.
+        const isSystemTag = !t.is_user_created;
+        html += `<div class="detail-section"><h4>Migrate to another environment</h4>`;
+        if (isSystemTag) {
+            html += `<p class="muted-small">System tags exist by default in every Qualys environment, so no migration is needed. The Qualys API rejects create-tag requests with a reservedType set.</p>`;
+        } else {
+            html += `
+                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                    <button class="btn-sm btn-outline" onclick="exportTagToLocal(${t.tag_id})">
+                        Export Tag
+                    </button>
+                    <button class="btn-sm btn-outline" onclick="window.location.href='/api/tags/${t.tag_id}/export-download'">
+                        Download JSON
+                    </button>
+                </div>
+                <p class="muted-small" style="margin-top:8px;">Export captures this tag's full JSON from the source environment. Once exported, push it into a destination environment from the <strong>Migration</strong> card on the Tags tab.</p>`;
+        }
+        html += `</div>`;
+
+        // Raw API payload — collapsed by default. Useful for debugging
+        // mis-classifications and seeing which fields Qualys actually
+        // returned for this tag.
+        if (t.raw_json) {
+            html += `<div class="detail-section">
+                <h4 style="cursor:pointer;user-select:none;" onclick="(function(el){const b=el.nextElementSibling;b.style.display=b.style.display==='none'?'':'none';})(this)">
+                    Raw API Payload <span class="muted-small">(click to toggle)</span>
+                </h4>
+                <pre class="tag-rule-text" style="display:none;max-height:400px;overflow:auto;">${escapeHtml(typeof t.raw_json === 'string' ? t.raw_json : JSON.stringify(t.raw_json, null, 2))}</pre>
+            </div>`;
+        }
+
+        content.innerHTML = html;
+        openModal("tagDetailModal");
+    } catch (e) { showToast("Failed to load tag detail", "error"); }
+}
+
+async function setTagClassificationOverride(tagId, value) {
+    try {
+        const body = { classification: value === "" ? null : value };
+        const resp = await apiFetch("/api/tags/" + tagId + "/classify", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+        });
+        const result = await resp.json();
+        if (result.error) { showToast(result.error, "error"); return; }
+        showToast("Classification updated", "success");
+        // Refresh the modal and the underlying list
+        showTagDetail(tagId);
+        searchTags();
+    } catch (e) {
+        showToast("Failed to update classification: " + e.message, "error");
+    }
+}
+
+// ─── Tag Phase 5: Subscription audit ────────────────────────────────────
+// Read-only inventory analysis. Backend does the heavy lifting in
+// app/tag_audit.py; the UI just renders grouped findings with a
+// severity-colored summary at the top and per-finding View Tag links.
+
+const _AUDIT_SEV_LABELS = {
+    error: { label: "Errors", color: "var(--danger, #ef4444)" },
+    warn:  { label: "Warnings", color: "var(--warning, #f59e0b)" },
+    info:  { label: "Informational", color: "var(--text-2)" },
+};
+
+const _AUDIT_RULE_LABELS = {
+    HIERARCHY_ORPHAN:        "Orphaned parent reference",
+    HIERARCHY_CYCLE:         "Hierarchy cycle",
+    HIERARCHY_TOO_DEEP:      "Hierarchy depth exceeds Qualys limit",
+    HIERARCHY_WIDE_ROOT:     "Wide root branch",
+    NAMING_EMPTY:            "Empty name",
+    NAMING_WHITESPACE:       "Whitespace in name",
+    NAMING_TOO_LONG:         "Name exceeds Qualys hard limit",
+    NAMING_LONG:             "Name longer than recommended",
+    NAMING_SHORT:            "Name shorter than recommended",
+    NAMING_DUPLICATE:        "Duplicate name (case-insensitive)",
+    DUPLICATE_RULE:          "Duplicate rule text",
+    CLASSIFICATION_OVERRIDE: "Classification overridden manually",
+    EDITABILITY_OVERRIDE:    "Editability overridden manually",
+};
+
+async function runTagAudit() {
+    const resultsEl = document.getElementById("tagAuditResults");
+    const summaryEl = document.getElementById("tagAuditSummary");
+    resultsEl.innerHTML = '<p class="muted-small">Running…</p>';
+    summaryEl.textContent = "";
+    try {
+        const resp = await apiFetch("/api/tags/audit");
+        const data = await resp.json();
+        _renderAuditSummary(data.summary || {});
+        _renderAuditGroups(data.groups || []);
+    } catch (e) {
+        resultsEl.innerHTML = `<p class="muted-small">Audit failed: ${escapeHtml(e.message)}</p>`;
+    }
+}
+
+function _renderAuditSummary(summary) {
+    const summaryEl = document.getElementById("tagAuditSummary");
+    const total = summary.total || 0;
+    const tags = summary.tag_count || 0;
+    if (total === 0) {
+        summaryEl.innerHTML = `<span style="color:var(--success, #22c55e);">✔ Clean — no findings</span> across ${tags.toLocaleString()} tag(s).`;
+        return;
+    }
+    const parts = [];
+    ["error", "warn", "info"].forEach(s => {
+        const n = summary[s] || 0;
+        if (n > 0) {
+            const meta = _AUDIT_SEV_LABELS[s];
+            parts.push(`<span style="color:${meta.color};font-weight:600;">${n} ${meta.label.toLowerCase()}</span>`);
+        }
+    });
+    summaryEl.innerHTML = parts.join(" · ") + ` across ${tags.toLocaleString()} tag(s)`;
+}
+
+function _renderAuditGroups(groups) {
+    const resultsEl = document.getElementById("tagAuditResults");
+    if (groups.length === 0) {
+        resultsEl.innerHTML = `<div class="audit-clean-state">
+            <p style="color:var(--success, #22c55e);font-weight:600;font-size:14px;margin:0 0 10px 0;">All checks passed — your tag inventory is healthy.</p>
+            <p class="muted-small" style="margin:0 0 8px 0;">The audit verified the following and found no issues:</p>
+            <ul class="muted-small audit-checks-list">
+                <li><strong>No orphaned parent references</strong> — every tag that references a parent points to a tag that exists</li>
+                <li><strong>No hierarchy cycles</strong> — no tag is its own ancestor (which would break Qualys rendering)</li>
+                <li><strong>Hierarchy depth within limits</strong> — no branch exceeds Qualys' maximum nesting depth</li>
+                <li><strong>No duplicate names</strong> — each tag name is unique (case-insensitive), avoiding confusion in reports</li>
+                <li><strong>No duplicate rule text</strong> — no two tags evaluate the same rule, which would waste processing</li>
+                <li><strong>Naming standards met</strong> — no empty, excessively long, or whitespace-only names</li>
+                <li><strong>No manual overrides</strong> — classification and editability settings are at defaults</li>
+            </ul>
+        </div>`;
+        return;
+    }
+    resultsEl.innerHTML = groups.map(g => {
+        const sevMeta = _AUDIT_SEV_LABELS[g.severity] || _AUDIT_SEV_LABELS.info;
+        const label = _AUDIT_RULE_LABELS[g.rule_id] || g.rule_id;
+        const description = _AUDIT_RULE_DESCRIPTIONS[g.rule_id] || "";
+        const isDuplicate = g.rule_id === "NAMING_DUPLICATE" || g.rule_id === "DUPLICATE_RULE";
+        const findings = isDuplicate
+            ? _renderDuplicateFindings(g.findings, g.rule_id)
+            : g.findings.map(_auditFindingHtml).join("");
+        return `<details class="audit-group" data-severity="${g.severity}" open>
+            <summary>
+                <span class="audit-sev-pill" style="background:${sevMeta.color};">${escapeHtml(g.severity.toUpperCase())}</span>
+                <strong>${escapeHtml(label)}</strong>
+                <span class="muted-small">${g.count} finding${g.count === 1 ? "" : "s"}</span>
+            </summary>
+            ${description ? `<p class="audit-rule-desc">${escapeHtml(description)}</p>` : ""}
+            <div class="audit-finding-list">${findings}</div>
+        </details>`;
+    }).join("");
+}
+
+const _AUDIT_RULE_DESCRIPTIONS = {
+    HIERARCHY_ORPHAN: "These tags reference a parent_tag_id that doesn't exist in the local inventory. The parent may have been deleted or never synced.",
+    HIERARCHY_CYCLE: "A tag references itself (directly or indirectly) as its own parent, creating an infinite loop that Qualys cannot render.",
+    HIERARCHY_TOO_DEEP: "The tag's ancestry chain exceeds Qualys' maximum nesting depth (8 levels). Move it closer to root.",
+    HIERARCHY_WIDE_ROOT: "A single root tag has an unusually large number of direct children — consider adding intermediate grouping tags.",
+    NAMING_EMPTY: "Tags with no name are invisible in most Qualys UIs and can't be referenced by QQL.",
+    NAMING_WHITESPACE: "Leading/trailing whitespace in tag names causes matching issues in reports and QQL queries.",
+    NAMING_TOO_LONG: "Exceeds the Qualys 255-character hard limit — the API will reject updates.",
+    NAMING_LONG: "Longer than recommended (80 chars) — may truncate in dashboards and reports.",
+    NAMING_SHORT: "Very short names (1-2 chars) are ambiguous and hard to find.",
+    NAMING_DUPLICATE: "Multiple tags share the same name (case-insensitive). This causes confusion in reports, QQL queries, and tag-based scan scoping since operators can't tell them apart.",
+    DUPLICATE_RULE: "Multiple tags evaluate the identical rule text. Both tags will match the same assets, wasting Qualys processing and confusing operators about which tag to use.",
+    CLASSIFICATION_OVERRIDE: "The auto-detected user/system classification has been manually overridden.",
+    EDITABILITY_OVERRIDE: "The default editability has been manually overridden.",
+};
+
+function _renderDuplicateFindings(findings, ruleId) {
+    // Group duplicate findings by their shared refs (cluster related tags together)
+    const clusters = [];
+    const seen = new Set();
+
+    for (const f of findings) {
+        if (seen.has(f.tag_id)) continue;
+        const cluster = [f];
+        seen.add(f.tag_id);
+        if (f.refs && f.refs.length) {
+            for (const refId of f.refs) {
+                const refFinding = findings.find(x => x.tag_id === refId);
+                if (refFinding && !seen.has(refId)) {
+                    cluster.push(refFinding);
+                    seen.add(refId);
+                }
+            }
+        }
+        clusters.push(cluster);
+    }
+
+    return clusters.map(cluster => {
+        const isDuplicateName = ruleId === "NAMING_DUPLICATE";
+        const sharedValue = isDuplicateName
+            ? cluster[0].name || "(unknown)"
+            : (cluster[0].message || "").match(/"([^"]+)"$/)?.[1] || "(same rule)";
+        const label = isDuplicateName ? "Shared name" : "Shared rule";
+
+        // Render each tag as a full card (same as Browse tab)
+        const tagCards = cluster.map(f => {
+            // Build a tag-like object from the finding for _tagCardHtml
+            const t = {
+                tag_id: f.tag_id,
+                name: f.name || "",
+                color: f.color || null,
+                rule_type: f.rule_type || null,
+                description: f.description || null,
+                is_user_created: f.is_user_created !== undefined ? f.is_user_created : 1,
+                reserved_type: f.reserved_type || null,
+            };
+            return _tagCardHtml(t);
+        }).join("");
+
+        return `<div class="audit-dup-cluster">
+            <div class="audit-dup-header">
+                <strong>${escapeHtml(label)}:</strong> <code>${escapeHtml(sharedValue)}</code>
+                <span class="muted-small">(${cluster.length} tags)</span>
+            </div>
+            <div class="audit-dup-tags">${tagCards}</div>
+            <div class="audit-hint muted-small">→ ${escapeHtml(cluster[0].hint || "Consider merging these or adding descriptions to explain why both exist.")}</div>
+        </div>`;
+    }).join("");
+}
+
+function _auditFindingHtml(f) {
+    const tagLink = f.tag_id
+        ? `<a href="#" onclick="event.preventDefault();showTagDetail(${f.tag_id});return false;">#${f.tag_id}${f.name ? ` · ${escapeHtml(f.name)}` : ""}</a>`
+        : `<span class="muted-small">(no tag)</span>`;
+    const refs = (f.refs && f.refs.length)
+        ? `<div class="muted-small">Related: ${f.refs.map(id => `<a href="#" onclick="event.preventDefault();showTagDetail(${id});return false;">#${id}</a>`).join(", ")}</div>`
+        : "";
+    const hint = f.hint ? `<div class="muted-small audit-hint">→ ${escapeHtml(f.hint)}</div>` : "";
+    return `<div class="audit-finding">
+        <div class="audit-finding-head">${tagLink}</div>
+        <div>${escapeHtml(f.message || "")}</div>
+        ${refs}${hint}
+    </div>`;
+}
+
+
+// ─── Tag Phase 4: Custom Library + Apply ────────────────────────────────
+// A curated bank of tag definitions (built-in starter set + user
+// entries) that the operator can apply into any Qualys environment.
+// Reuses the Phase 3 create-tag plumbing on the server side; this
+// module is the UI: list, filter, edit, apply, history.
+
+let _libraryEntries = [];
+let _libraryFilterTimer = null;
+let _pendingLibraryApply = null;     // entry being applied
+let _libraryFormState = { mode: "create", entryId: null };
+
+function loadLibraryDebounced() {
+    if (_libraryFilterTimer) clearTimeout(_libraryFilterTimer);
+    _libraryFilterTimer = setTimeout(loadLibrary, 200);
+}
+
+async function loadLibrary() {
+    const container = document.getElementById("libraryList");
+    if (!container) return;
+    const q = (document.getElementById("libraryFilterText").value || "").trim();
+    const cat = document.getElementById("libraryFilterCategory").value || "";
+    const showHidden = document.getElementById("libraryShowHidden").checked;
+    const params = new URLSearchParams();
+    if (q) params.set("q", q);
+    if (cat) params.set("category", cat);
+    if (showHidden) params.set("include_hidden", "1");
+    try {
+        const resp = await apiFetch("/api/library?" + params.toString());
+        const entries = await resp.json();
+        _libraryEntries = Array.isArray(entries) ? entries : [];
+        _renderLibraryList(_libraryEntries);
+        _refreshLibraryCategoryDropdown(_libraryEntries);
+    } catch (e) {
+        container.innerHTML = `<p class="muted-small">Failed to load library: ${escapeHtml(e.message)}</p>`;
+    }
+}
+
+function _refreshLibraryCategoryDropdown(entries) {
+    const sel = document.getElementById("libraryFilterCategory");
+    if (!sel) return;
+    const current = sel.value;
+    const cats = Array.from(new Set(entries.map(e => e.category).filter(Boolean))).sort();
+    sel.innerHTML = '<option value="">All categories</option>'
+        + cats.map(c => `<option value="${escapeHtml(c)}"${c === current ? " selected" : ""}>${escapeHtml(c)}</option>`).join("");
+}
+
+function _renderLibraryList(entries) {
+    const container = document.getElementById("libraryList");
+    if (!entries.length) {
+        container.innerHTML = `<p class="muted-small">No library entries match.</p>`;
+        return;
+    }
+    // Group by rule_type
+    const groups = {};
+    for (const e of entries) {
+        const rt = e.rule_type || "UNKNOWN";
+        if (!groups[rt]) groups[rt] = [];
+        groups[rt].push(e);
+    }
+    // Sort groups: ASSET_INVENTORY first, then alphabetically
+    const order = Object.keys(groups).sort((a, b) => {
+        if (a === "ASSET_INVENTORY") return -1;
+        if (b === "ASSET_INVENTORY") return 1;
+        return a.localeCompare(b);
+    });
+    let html = "";
+    for (const rt of order) {
+        const items = groups[rt];
+        const statusInfo = TAG_RULE_TYPE_STATUS[rt];
+        const statusPill = statusInfo
+            ? ` <span class="badge-pill badge-pill-${statusInfo.status}">${statusInfo.status}</span>`
+            : "";
+        html += `<div class="library-group collapsed">
+            <div class="library-group-header" onclick="this.parentElement.classList.toggle('collapsed')">
+                <svg class="library-group-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+                <strong>${escapeHtml(rt)}</strong>${statusPill}
+                <span class="muted-small">(${items.length})</span>
+            </div>
+            <div class="library-group-body">
+                ${items.map(_libraryRowHtml).join("")}
+            </div>
+        </div>`;
+    }
+    container.innerHTML = html;
+}
+
+function openLibraryDetail(libraryId) {
+    const entry = _libraryEntries.find(e => e.library_id === libraryId);
+    if (!entry) return;
+    document.getElementById("libraryDetailTitle").textContent = entry.name;
+    const notice = _libraryRuleNotice(entry);
+    const sw = entry.color ? `<span class="tag-swatch" style="background:${escapeHtml(entry.color)};display:inline-block;width:14px;height:14px;border-radius:3px;vertical-align:middle;margin-right:6px;"></span>` : "";
+    const sourceLink = entry.source_url
+        ? `<a href="${escapeHtml(entry.source_url)}" target="_blank" rel="noopener">${escapeHtml(entry.source_url)}</a>`
+        : '<span class="muted-small">None</span>';
+    document.getElementById("libraryDetailContent").innerHTML = `
+        ${notice}
+        <table class="library-detail-table">
+            <tr><th>Name</th><td>${sw}${escapeHtml(entry.name)}</td></tr>
+            <tr><th>Category</th><td>${escapeHtml(entry.category || "")}</td></tr>
+            <tr><th>Description</th><td>${escapeHtml(entry.description || "")}</td></tr>
+            <tr><th>Rationale</th><td>${escapeHtml(entry.rationale || "")}</td></tr>
+            <tr><th>Rule Type</th><td><code>${escapeHtml(entry.rule_type || "")}</code></td></tr>
+            <tr><th>Rule Text</th><td><pre class="library-detail-pre">${escapeHtml(entry.rule_text || "(none)")}</pre></td></tr>
+            <tr><th>Color</th><td>${entry.color ? `<span class="tag-swatch" style="background:${escapeHtml(entry.color)};display:inline-block;width:14px;height:14px;border-radius:3px;vertical-align:middle;"></span> ${escapeHtml(entry.color)}` : "None"}</td></tr>
+            <tr><th>Criticality</th><td>${entry.criticality || "—"}</td></tr>
+            <tr><th>Suggested Parent</th><td>${escapeHtml(entry.suggested_parent || "None")}</td></tr>
+            <tr><th>Source</th><td>${sourceLink}</td></tr>
+            <tr><th>Type</th><td>${entry.is_builtin ? "Built-in (read-only)" : "User-created"}</td></tr>
+        </table>
+    `;
+    document.getElementById("libraryDetailCloneBtn").onclick = function() {
+        closeModal("libraryDetailModal");
+        cloneLibraryEntry(libraryId);
+    };
+    document.getElementById("libraryDetailApplyBtn").onclick = function() {
+        closeModal("libraryDetailModal");
+        openLibraryApply(libraryId);
+    };
+    openModal("libraryDetailModal");
+}
+
+function _libraryRuleNotice(e) {
+    const status = TAG_RULE_TYPE_STATUS[e.rule_type];
+    if (!status) return "";
+    if (status.status === "legacy") {
+        const alt = status.replacement || "GLOBAL_ASSET_VIEW";
+        return `<div class="library-notice library-notice-legacy" title="${escapeHtml(status.notes || "")}">` +
+            `<strong>Legacy rule type.</strong> Qualys now recommends <code>${escapeHtml(alt)}</code> for better performance and CSAM compatibility. ` +
+            `Consider cloning this entry and rewriting the rule as a ${escapeHtml(alt)} query.` +
+            `</div>`;
+    }
+    if (status.status === "restricted") {
+        return `<div class="library-notice library-notice-restricted" title="${escapeHtml(status.notes || "")}">` +
+            `<strong>Restricted rule type.</strong> GROOVY must be enabled by Qualys support/your TAM before use. ` +
+            `Use "Test on Qualys" to verify your subscription supports it.` +
+            `</div>`;
+    }
+    return "";
+}
+
+function _libraryRowHtml(e) {
+    const builtinPill = e.is_builtin ? '<span class="badge-pill" title="Ships with the app">built-in</span>' : '';
+    const hiddenPill = e.is_hidden ? '<span class="badge-pill" style="background:var(--bg-2);color:var(--text-2);">hidden</span>' : '';
+    const cat = e.category ? `<span class="badge-pill">${escapeHtml(e.category)}</span>` : '';
+    const sw = e.color ? `<span class="tag-swatch" style="background:${escapeHtml(e.color)};display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;"></span>` : '';
+    const hideBtn = e.is_hidden
+        ? `<button class="btn-sm btn-outline" onclick="event.stopPropagation();unhideLibraryEntry(${e.library_id})">Unhide</button>`
+        : (e.is_builtin
+            ? `<button class="btn-sm btn-outline" onclick="event.stopPropagation();hideLibraryEntry(${e.library_id})" title="Hide from default view">Hide</button>`
+            : `<button class="btn-sm btn-outline btn-danger" onclick="event.stopPropagation();deleteLibraryEntry(${e.library_id})" title="Delete this user entry">×</button>`);
+    return `<div class="library-row library-row-clickable" data-id="${e.library_id}" onclick="openLibraryDetail(${e.library_id})">
+        <div class="library-meta">
+            <strong>${sw}${escapeHtml(e.name)}</strong> ${cat} ${builtinPill} ${hiddenPill}
+            <div class="muted-small">${escapeHtml(e.description || "")}</div>
+        </div>
+        <div class="library-actions">
+            <button class="btn-sm btn-primary" onclick="event.stopPropagation();openLibraryApply(${e.library_id})">Apply</button>
+            <button class="btn-sm btn-outline" onclick="event.stopPropagation();cloneLibraryEntry(${e.library_id})">Clone</button>
+            ${hideBtn}
+        </div>
+    </div>`;
+}
+
+// ── Apply flow ──
+
+function openLibraryApply(libraryId) {
+    const auth = getApiAuth();
+    if (!auth.platform) { showToast("Select a Qualys platform first", "error"); return; }
+    const entry = _libraryEntries.find(e => e.library_id === libraryId);
+    if (!entry) { showToast("Library entry not found in cache — refresh the list", "error"); return; }
+    _pendingLibraryApply = entry;
+    document.getElementById("libraryApplySourceName").textContent = entry.name;
+    document.getElementById("libraryApplySourceMeta").textContent =
+        " · " + entry.category + (entry.rule_type ? " · " + entry.rule_type : "");
+    const rationaleEl = document.getElementById("libraryApplyRationale");
+    const noticeHtml = _libraryRuleNotice(entry);
+    if (entry.rationale || entry.source_url || noticeHtml) {
+        rationaleEl.style.display = "";
+        rationaleEl.innerHTML = noticeHtml
+            + (entry.rationale ? `<p>${escapeHtml(entry.rationale)}</p>` : "")
+            + (entry.source_url ? `<p class="muted-small">Source: <a href="${escapeHtml(entry.source_url)}" target="_blank" rel="noopener">${escapeHtml(entry.source_url)}</a></p>` : "");
+    } else {
+        rationaleEl.style.display = "none";
+    }
+    document.getElementById("libraryApplyNewName").value = "";
+    document.getElementById("libraryApplyParent").value = "";
+    document.getElementById("libraryApplyRuleText").value = "";
+    if (entry.color) document.getElementById("libraryApplyColor").value = entry.color;
+    document.getElementById("libraryApplyCriticality").value = "";
+    document.getElementById("libraryApplyTestResult").style.display = "none";
+    fetch("/api/credentials").then(r => r.json()).then(creds => {
+        const sel = document.getElementById("libraryApplyCredSelect");
+        sel.innerHTML = '<option value="">-- pick destination credential --</option>'
+            + (Array.isArray(creds) ? creds.map(c =>
+                `<option value="${c.id}" data-platform="${c.platform_id || ""}">${escapeHtml(formatCredLabel(c))}</option>`
+            ).join("") : "");
+    }).catch(() => {});
+    openModal("libraryApplyModal");
+}
+
+function _gatherLibraryApplyForm() {
+    const sel = document.getElementById("libraryApplyCredSelect");
+    const credId = sel.value;
+    const platform = sel.options[sel.selectedIndex]?.dataset.platform || "";
+    const overrides = {};
+    const rt = document.getElementById("libraryApplyRuleText").value.trim();
+    if (rt) overrides.rule_text = rt;
+    const color = document.getElementById("libraryApplyColor").value;
+    if (color && _pendingLibraryApply && color !== _pendingLibraryApply.color) overrides.color = color;
+    const crit = document.getElementById("libraryApplyCriticality").value.trim();
+    if (crit) overrides.criticality = crit;
+    return {
+        credential_id: credId,
+        platform: platform,
+        new_name: document.getElementById("libraryApplyNewName").value.trim() || null,
+        parent_tag_id: document.getElementById("libraryApplyParent").value.trim() || null,
+        overrides,
+    };
+}
+
+async function testLibraryApplyOnQualys() {
+    if (!_pendingLibraryApply) return;
+    const form = _gatherLibraryApplyForm();
+    if (!form.credential_id) { showToast("Pick a destination credential first", "error"); return; }
+    // Build the same form-shape Phase 3 test endpoint expects.
+    const entry = _pendingLibraryApply;
+    const overrides = form.overrides || {};
+    const tagForm = {
+        name: form.new_name || entry.name,
+        color: overrides.color || entry.color,
+        criticality: overrides.criticality !== undefined && overrides.criticality !== "" ? overrides.criticality : entry.criticality,
+        description: entry.description,
+        rule_type: entry.rule_type,
+        rule_text: overrides.rule_text !== undefined ? overrides.rule_text : entry.rule_text,
+        parent_tag_id: form.parent_tag_id,
+        credential_id: form.credential_id,
+        platform: form.platform,
+    };
+    const resultEl = document.getElementById("libraryApplyTestResult");
+    resultEl.style.display = "";
+    resultEl.className = "tag-form-test loading";
+    resultEl.textContent = "Asking Qualys to evaluate the rule…";
+    try {
+        const resp = await apiFetch("/api/tags/test-rule", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(tagForm),
+        });
+        const result = await resp.json();
+        if (!resp.ok || result.ok === false) {
+            resultEl.className = "tag-form-test error";
+            resultEl.textContent = result.message || "Test failed";
+            return;
+        }
+        if (result.stage === "fallback") {
+            resultEl.className = "tag-form-test warn";
+            resultEl.textContent = "Qualys preview not available on this tenant — relying on local validation.";
+            return;
+        }
+        const count = result.asset_count;
+        resultEl.className = "tag-form-test success";
+        resultEl.textContent = (count != null
+            ? "Qualys evaluated the rule against " + count.toLocaleString() + " matching asset(s)."
+            : "Qualys accepted the rule.");
+    } catch (e) {
+        resultEl.className = "tag-form-test error";
+        resultEl.textContent = "Test failed: " + e.message;
+    }
+}
+
+async function confirmLibraryApply() {
+    if (!_pendingLibraryApply) return;
+    const form = _gatherLibraryApplyForm();
+    if (!form.credential_id) { showToast("Pick a destination credential", "error"); return; }
+    try {
+        const resp = await apiFetch("/api/library/" + _pendingLibraryApply.library_id + "/apply", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(form),
+        });
+        const result = await resp.json();
+        if (!resp.ok || result.error) {
+            const detail = result.errors
+                ? Object.entries(result.errors).map(([k, v]) => `${k}: ${v.join(", ")}`).join(" · ")
+                : "";
+            showToast((result.error || "Apply failed") + (detail ? " — " + detail : ""), "error");
+            return;
+        }
+        showToast("Applied — destination tag id " + (result.destination_tag_id || "?"), "success");
+        closeModal("libraryApplyModal");
+        _pendingLibraryApply = null;
+        searchTags();
+    } catch (e) {
+        showToast("Apply failed: " + e.message, "error");
+    }
+}
+
+// ── Entry CRUD ──
+
+function openLibraryEntryForm(libraryId) {
+    _libraryFormState = { mode: libraryId ? "edit" : "create", entryId: libraryId || null };
+    document.getElementById("libraryEntryFormTitle").textContent =
+        libraryId ? "Edit library entry" : "New library entry";
+    _populateLibraryRuleType();
+    if (!libraryId) {
+        _resetLibraryEntryForm();
+        openModal("libraryEntryFormModal");
+        return;
+    }
+    apiFetch("/api/library/" + libraryId).then(r => r.json()).then(e => {
+        if (e.error) { showToast(e.error, "error"); return; }
+        document.getElementById("libEntryName").value = e.name || "";
+        document.getElementById("libEntryCategory").value = e.category || "Custom";
+        document.getElementById("libEntryColor").value = e.color || "#22c55e";
+        document.getElementById("libEntryCriticality").value = e.criticality || "";
+        document.getElementById("libEntryDescription").value = e.description || "";
+        document.getElementById("libEntryRationale").value = e.rationale || "";
+        document.getElementById("libEntrySourceUrl").value = e.source_url || "";
+        document.getElementById("libEntrySuggestedParent").value = e.suggested_parent || "";
+        document.getElementById("libEntryRuleType").value = e.rule_type || "";
+        document.getElementById("libEntryRuleText").value = e.rule_text || "";
+        _onLibEntryRuleTypeChange();
+        openModal("libraryEntryFormModal");
+    });
+}
+
+function _resetLibraryEntryForm() {
+    ["libEntryName","libEntryCategory","libEntryCriticality","libEntryDescription","libEntryRationale","libEntrySourceUrl","libEntrySuggestedParent","libEntryRuleText"].forEach(id => {
+        document.getElementById(id).value = id === "libEntryCategory" ? "Custom" : "";
+    });
+    document.getElementById("libEntryColor").value = "#22c55e";
+    document.getElementById("libEntryRuleType").value = "";
+    document.getElementById("libEntryRuleTextHelp").textContent = "";
+    document.getElementById("libEntryFormSummary").style.display = "none";
+}
+
+function _populateLibraryRuleType() {
+    const sel = document.getElementById("libEntryRuleType");
+    if (!sel || sel.options.length > 1) return;
+    sel.innerHTML = '<option value="">-- pick a rule type --</option>'
+        + TAG_RULE_TYPES.map(t => `<option value="${t}">${_ruleTypeOptionLabel(t)}</option>`).join("");
+    sel.onchange = _onLibEntryRuleTypeChange;
+}
+
+function _onLibEntryRuleTypeChange() {
+    const rt = document.getElementById("libEntryRuleType").value;
+    document.getElementById("libEntryRuleTextHelp").textContent =
+        rt ? (TAG_RULE_TEXT_HELP[rt] || "") : "";
+    _setRuleTypeStatusBanner("libEntryRuleTypeStatus", rt);
+}
+
+async function submitLibraryEntryForm() {
+    const body = {
+        name: document.getElementById("libEntryName").value,
+        category: document.getElementById("libEntryCategory").value,
+        color: document.getElementById("libEntryColor").value,
+        criticality: document.getElementById("libEntryCriticality").value,
+        description: document.getElementById("libEntryDescription").value,
+        rationale: document.getElementById("libEntryRationale").value,
+        source_url: document.getElementById("libEntrySourceUrl").value,
+        suggested_parent: document.getElementById("libEntrySuggestedParent").value,
+        rule_type: document.getElementById("libEntryRuleType").value,
+        rule_text: document.getElementById("libEntryRuleText").value,
+    };
+    const isEdit = _libraryFormState.mode === "edit";
+    const url = isEdit ? "/api/library/" + _libraryFormState.entryId : "/api/library";
+    const method = isEdit ? "PATCH" : "POST";
+    try {
+        const resp = await apiFetch(url, {
+            method,
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+        });
+        const result = await resp.json();
+        if (!resp.ok || result.error) {
+            const summary = document.getElementById("libEntryFormSummary");
+            summary.style.display = "";
+            summary.innerHTML = _summaryHtml(result);
+            return;
+        }
+        showToast(isEdit ? "Library entry updated" : "Library entry created", "success");
+        closeModal("libraryEntryFormModal");
+        loadLibrary();
+    } catch (e) {
+        showToast("Save failed: " + e.message, "error");
+    }
+}
+
+async function deleteLibraryEntry(libraryId) {
+    if (!await themedConfirm("Delete this library entry? Removing a built-in just hides it; user entries are removed.")) return;
+    try {
+        const resp = await apiFetch("/api/library/" + libraryId, { method: "DELETE" });
+        const result = await resp.json();
+        if (!resp.ok || result.error) { showToast(result.error || "Delete failed", "error"); return; }
+        showToast("Library entry removed", "success");
+        loadLibrary();
+    } catch (e) { showToast("Delete failed: " + e.message, "error"); }
+}
+
+async function hideLibraryEntry(libraryId) {
+    deleteLibraryEntry(libraryId);  // delete on a built-in == hide
+}
+
+async function unhideLibraryEntry(libraryId) {
+    try {
+        const resp = await apiFetch("/api/library/" + libraryId + "/unhide", { method: "POST" });
+        const result = await resp.json();
+        if (!resp.ok || result.error) { showToast(result.error || "Unhide failed", "error"); return; }
+        showToast("Library entry unhidden", "success");
+        loadLibrary();
+    } catch (e) { showToast("Unhide failed: " + e.message, "error"); }
+}
+
+async function cloneLibraryEntry(libraryId) {
+    try {
+        const resp = await apiFetch("/api/library/" + libraryId + "/clone", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({}),
+        });
+        const result = await resp.json();
+        if (!resp.ok || result.error) { showToast(result.error || "Clone failed", "error"); return; }
+        showToast("Cloned — opening edit form", "success");
+        loadLibrary();
+        if (result.library_id) openLibraryEntryForm(result.library_id);
+    } catch (e) { showToast("Clone failed: " + e.message, "error"); }
+}
+
+// ── Apply history ──
+
+async function openLibraryApplyHistory(libraryId) {
+    document.getElementById("libraryHistoryTitle").textContent =
+        libraryId ? "Apply history for entry #" + libraryId : "All library applies";
+    const list = document.getElementById("libraryHistoryList");
+    list.innerHTML = '<p class="muted-small">Loading…</p>';
+    openModal("libraryHistoryModal");
+    const url = libraryId ? `/api/library/${libraryId}/applies` : "/api/library/applies";
+    try {
+        const resp = await apiFetch(url);
+        const rows = await resp.json();
+        if (!Array.isArray(rows) || rows.length === 0) {
+            list.innerHTML = '<p class="muted-small">No applies recorded yet.</p>';
+            return;
+        }
+        list.innerHTML = '<table class="data-table" style="width:100%;font-size:12px;">'
+            + '<thead><tr><th>When</th><th>Library entry</th><th>Destination</th><th>Tag id</th></tr></thead>'
+            + '<tbody>' + rows.map(r =>
+                `<tr>
+                    <td>${escapeHtml(r.applied_at || "")}</td>
+                    <td>${escapeHtml(r.library_name || ("entry " + r.library_id))}</td>
+                    <td>${escapeHtml(r.destination_platform || "")} · ${escapeHtml(r.destination_credential_id || "")}</td>
+                    <td>${escapeHtml(String(r.destination_tag_id || ""))}</td>
+                </tr>`
+            ).join("") + '</tbody></table>';
+    } catch (e) {
+        list.innerHTML = `<p class="muted-small">Failed to load: ${escapeHtml(e.message)}</p>`;
+    }
+}
+
+
+// ─── Tag Phase 3: CRUD pushed to Qualys ─────────────────────────────────
+// Edit / Delete / Create flows. The same form modal serves both Edit
+// (preloaded with a current tag) and Create (blank). Validation runs:
+//   - On every keystroke (debounced) → server-side /api/tags/validate
+//   - On Test on Qualys click          → server-side /api/tags/test-rule
+//   - On Save                          → server-side via the create /
+//                                         update endpoint, which re-runs
+//                                         validation as defense in depth
+// Save button stays disabled until validation passes; warnings (vs.
+// errors) don't gate Save.
+
+// Canonical rule types + per-type help text. Mirrors
+// app.tag_validation.RULE_TEXT_HELP intentionally — keeping the
+// strings here means the form gives instant guidance without a
+// network round-trip.
+const TAG_RULE_TYPES = [
+    "GLOBAL_ASSET_VIEW", "CLOUD_ASSET", "STATIC", "NETWORK_RANGE",
+    "NETWORK_RANGE_ENHANCED", "VULN_EXIST", "VULN_DETECTION",
+    "ASSET_SEARCH", "NAME_CONTAINS", "OPEN_PORTS", "INSTALLED_SOFTWARE",
+    "ASSET_GROUP", "BUSINESS_INFORMATION", "BUSINESS_INFO", "TAG_SET",
+    "OS_REGEX", "OPERATING_SYSTEM", "ASSET_INVENTORY", "GROOVY",
+];
+const TAG_RULE_TEXT_OPTIONAL = new Set(["STATIC", "ASSET_GROUP", "TAG_SET"]);
+
+// Best-practice / availability metadata shown in the form. Mirrors
+// app.tag_validation.RULE_TYPE_STATUS so the form gives the operator
+// immediate guidance before they build the rule_text. Status pills
+// appear next to the rule-type dropdown and in the dropdown options.
+const TAG_RULE_TYPE_STATUS = {
+    OS_REGEX: {
+        status: "legacy",
+        replacement: "GLOBAL_ASSET_VIEW",
+        notes: "OS_REGEX still works but Qualys best practice is now GLOBAL_ASSET_VIEW — better performance and CSAM compatible.",
+    },
+    OPERATING_SYSTEM: {
+        status: "legacy",
+        replacement: "GLOBAL_ASSET_VIEW",
+        notes: "Exact-match OS_NAME rules are legacy. Prefer GLOBAL_ASSET_VIEW queries so the rule survives Qualys OS-string normalisation changes.",
+    },
+    ASSET_INVENTORY: {
+        status: "legacy",
+        replacement: "GLOBAL_ASSET_VIEW",
+        notes: "ASSET_INVENTORY has been replaced by GLOBAL_ASSET_VIEW. Existing rules still work but new tags should use GLOBAL_ASSET_VIEW.",
+    },
+    GROOVY: {
+        status: "restricted",
+        notes: "GROOVY rule support is disabled by default in most Qualys subscriptions and must be enabled by Qualys support. Use Test on Qualys to confirm your subscription accepts it.",
+    },
+};
+const TAG_RULE_TEXT_HELP = {
+    STATIC: "No rule needed — assets are assigned manually in the Qualys console.",
+    NAME_CONTAINS: "Substring matched against the asset DNS or NetBIOS name (case-insensitive).",
+    NETWORK_RANGE: 'Comma-separated IPv4 CIDRs or single IPs (e.g. "10.0.0.0/8, 192.168.1.10").',
+    NETWORK_RANGE_ENHANCED: "CIDR syntax with extended range support — see Qualys docs.",
+    OS_REGEX: 'Java regex matched against the asset OS string (e.g. "^Windows.*Server.*"). Legacy — prefer GLOBAL_ASSET_VIEW.',
+    OPERATING_SYSTEM: "Exact OS name as Qualys reports it. Legacy — prefer GLOBAL_ASSET_VIEW.",
+    INSTALLED_SOFTWARE: 'Software name pattern (e.g. "Apache HTTP Server" or wildcards).',
+    OPEN_PORTS: 'Comma-separated ports or ranges (e.g. "22, 80, 443, 8080-8090").',
+    VULN_EXIST: "QID number — assets with this QID detected get tagged.",
+    VULN_DETECTION: "QID detection rule — similar to VULN_EXIST with extended match options.",
+    ASSET_SEARCH: "Qualys asset search query language (QQL).",
+    ASSET_GROUP: "Qualys asset group id — Qualys handles the membership.",
+    ASSET_INVENTORY: "Asset inventory query (CSAM). Legacy — replaced by GLOBAL_ASSET_VIEW.",
+    GLOBAL_ASSET_VIEW: "Global AssetView query (preferred) — CSAM-compatible, replaces ASSET_INVENTORY.",
+    CLOUD_ASSET: "Cloud asset attribute query (AWS, Azure, GCP, OCI).",
+    BUSINESS_INFORMATION: "Business-information field expression.",
+    BUSINESS_INFO: "Business-info field expression (alias).",
+    GROOVY: "Groovy script — full programmatic access to the asset object.",
+    TAG_SET: "Membership of a set of other tag ids.",
+};
+
+let _tagFormState = {
+    mode: "create",   // "create" | "edit"
+    tagId: null,      // populated on edit
+    lastValidation: null,
+    saveAnyway: false,  // operator escape hatch when Qualys-side warnings disagree with our heuristics
+};
+
+function _ruleTypeOptionLabel(t) {
+    const status = TAG_RULE_TYPE_STATUS[t];
+    if (status) return `${t} (${status.status})`;
+    // Provide friendly context for common types
+    const labels = {
+        GLOBAL_ASSET_VIEW: "GLOBAL_ASSET_VIEW (preferred)",
+        CLOUD_ASSET: "CLOUD_ASSET (AWS/Azure/GCP/OCI)",
+        VULN_EXIST: "VULN_EXIST (QID match)",
+        VULN_DETECTION: "VULN_DETECTION (QID detection)",
+        STATIC: "STATIC (manual assignment)",
+        NETWORK_RANGE: "NETWORK_RANGE (CIDR/IP)",
+        NETWORK_RANGE_ENHANCED: "NETWORK_RANGE_ENHANCED (extended CIDR)",
+        ASSET_SEARCH: "ASSET_SEARCH (XML criteria)",
+        NAME_CONTAINS: "NAME_CONTAINS (hostname match)",
+        OPEN_PORTS: "OPEN_PORTS (port list)",
+        INSTALLED_SOFTWARE: "INSTALLED_SOFTWARE (app name)",
+    };
+    return labels[t] || t;
+}
+
+function _populateRuleTypeDropdown() {
+    const sel = document.getElementById("tagFormRuleType");
+    if (!sel || sel.options.length > 1) return;  // already populated
+    sel.innerHTML = '<option value="">-- pick a rule type --</option>'
+        + TAG_RULE_TYPES.map(t => `<option value="${t}">${_ruleTypeOptionLabel(t)}</option>`).join("");
+}
+
+function openTagCreateForm() {
+    const auth = getApiAuth();
+    if (!auth.platform) { showToast("Select a Qualys platform first", "error"); return; }
+    _tagFormState = { mode: "create", tagId: null, lastValidation: null, saveAnyway: false };
+    document.getElementById("tagFormTitle").textContent = "New Tag";
+    document.getElementById("tagFormSaveBtn").textContent = "Create";
+    document.getElementById("tagFormDeleteBtn").style.display = "none";
+    _resetTagForm();
+    _populateRuleTypeDropdown();
+    onTagRuleTypeChange();
+    openModal("tagFormModal");
+    validateTagFormDebounced();
+}
+
+async function openTagEditForm(tagId) {
+    const auth = getApiAuth();
+    if (!auth.platform) { showToast("Select a Qualys platform first", "error"); return; }
+    _tagFormState = { mode: "edit", tagId, lastValidation: null, saveAnyway: false };
+    document.getElementById("tagFormTitle").textContent = "Edit Tag #" + tagId;
+    document.getElementById("tagFormSaveBtn").textContent = "Save changes";
+    document.getElementById("tagFormDeleteBtn").style.display = "";
+    _resetTagForm();
+    _populateRuleTypeDropdown();
+    try {
+        const resp = await apiFetch("/api/tags/" + tagId);
+        const t = await resp.json();
+        if (t.error) { showToast(t.error, "error"); return; }
+        document.getElementById("tagFormName").value = t.name || "";
+        if (t.color) document.getElementById("tagFormColor").value = t.color;
+        if (t.criticality != null) document.getElementById("tagFormCriticality").value = t.criticality;
+        if (t.parent_tag_id) document.getElementById("tagFormParent").value = t.parent_tag_id;
+        if (t.description) document.getElementById("tagFormDescription").value = t.description;
+        if (t.rule_type) document.getElementById("tagFormRuleType").value = t.rule_type;
+        if (t.rule_text) document.getElementById("tagFormRuleText").value = t.rule_text;
+        onTagRuleTypeChange();
+        openModal("tagFormModal");
+        validateTagFormDebounced();
+    } catch (e) {
+        showToast("Failed to load tag: " + e.message, "error");
+    }
+}
+
+function _resetTagForm() {
+    document.getElementById("tagFormName").value = "";
+    document.getElementById("tagFormColor").value = "#22c55e";
+    document.getElementById("tagFormCriticality").value = "";
+    document.getElementById("tagFormParent").value = "";
+    document.getElementById("tagFormDescription").value = "";
+    const sel = document.getElementById("tagFormRuleType");
+    if (sel) sel.value = "";
+    document.getElementById("tagFormRuleText").value = "";
+    document.getElementById("tagFormSummary").style.display = "none";
+    document.getElementById("tagFormTestResult").style.display = "none";
+    ["Name", "Color", "Criticality", "Parent", "Description", "RuleType", "RuleText"].forEach(k => {
+        const el = document.getElementById("tagForm" + k + "Error");
+        if (el) el.textContent = "";
+    });
+    document.getElementById("tagFormSaveBtn").disabled = true;
+}
+
+function _ruleTypeStatusBannerHtml(rt) {
+    /* Renders a status callout under the rule_type select. Empty
+     * string when the rule type has no special status (the common
+     * case — keeps the form quiet). */
+    const status = TAG_RULE_TYPE_STATUS[rt];
+    if (!status) return "";
+    const cls = status.status === "legacy" ? "rule-status-legacy"
+              : status.status === "restricted" ? "rule-status-restricted"
+              : "rule-status-info";
+    const repl = status.replacement
+        ? ` <strong>Recommended replacement:</strong> ${escapeHtml(status.replacement)}.`
+        : "";
+    return `<div class="${cls}"><strong>[${escapeHtml(status.status.toUpperCase())}]</strong> ${escapeHtml(status.notes)}${repl}</div>`;
+}
+
+function _setRuleTypeStatusBanner(containerId, rt) {
+    const c = document.getElementById(containerId);
+    if (!c) return;
+    c.innerHTML = _ruleTypeStatusBannerHtml(rt);
+    c.style.display = c.innerHTML ? "" : "none";
+}
+
+function onTagRuleTypeChange() {
+    const rt = document.getElementById("tagFormRuleType").value;
+    const help = document.getElementById("tagFormRuleTextHelp");
+    const required = document.getElementById("tagFormRuleTextRequired");
+    help.textContent = rt ? (TAG_RULE_TEXT_HELP[rt] || "") : "";
+    required.style.display = (rt && !TAG_RULE_TEXT_OPTIONAL.has(rt)) ? "" : "none";
+    _setRuleTypeStatusBanner("tagFormRuleTypeStatus", rt);
+    validateTagFormDebounced();
+}
+
+let _tagFormValidateTimer = null;
+function validateTagFormDebounced() {
+    if (_tagFormValidateTimer) clearTimeout(_tagFormValidateTimer);
+    _tagFormValidateTimer = setTimeout(validateTagForm, 250);
+}
+
+function _gatherTagForm() {
+    return {
+        name: document.getElementById("tagFormName").value,
+        color: document.getElementById("tagFormColor").value,
+        criticality: document.getElementById("tagFormCriticality").value,
+        parent_tag_id: document.getElementById("tagFormParent").value,
+        description: document.getElementById("tagFormDescription").value,
+        rule_type: document.getElementById("tagFormRuleType").value,
+        rule_text: document.getElementById("tagFormRuleText").value,
+    };
+}
+
+async function validateTagForm() {
+    const form = _gatherTagForm();
+    try {
+        const resp = await apiFetch("/api/tags/validate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(form),
+        });
+        const result = await resp.json();
+        _tagFormState.lastValidation = result;
+        _renderTagFormErrors(result);
+        const summary = document.getElementById("tagFormSummary");
+        if (result.ok && Object.keys(result.warnings || {}).length === 0) {
+            summary.style.display = "none";
+        } else {
+            summary.style.display = "";
+            summary.innerHTML = _summaryHtml(result);
+        }
+        document.getElementById("tagFormSaveBtn").disabled = !result.ok;
+    } catch (e) {
+        // Validation network error — don't block save, but flag it.
+        _tagFormState.lastValidation = null;
+        document.getElementById("tagFormSaveBtn").disabled = false;
+    }
+}
+
+function _renderTagFormErrors(result) {
+    const fieldMap = {
+        name: "Name", color: "Color", criticality: "Criticality",
+        parentTagId: "Parent", description: "Description",
+        ruleType: "RuleType", ruleText: "RuleText",
+    };
+    Object.entries(fieldMap).forEach(([apiKey, suffix]) => {
+        const el = document.getElementById("tagForm" + suffix + "Error");
+        if (!el) return;
+        const errs = (result.errors || {})[apiKey] || [];
+        el.textContent = errs.join(" · ");
+    });
+}
+
+function _summaryHtml(result) {
+    let html = "";
+    if (!result.ok) {
+        const flat = [];
+        Object.entries(result.errors || {}).forEach(([k, msgs]) =>
+            msgs.forEach(m => flat.push(`<li><strong>${escapeHtml(k)}:</strong> ${escapeHtml(m)}</li>`))
+        );
+        if (flat.length) html += `<div class="tag-form-errors"><strong>Validation errors:</strong><ul>${flat.join("")}</ul></div>`;
+    }
+    const wflat = [];
+    Object.entries(result.warnings || {}).forEach(([k, msgs]) =>
+        msgs.forEach(m => wflat.push(`<li><strong>${escapeHtml(k)}:</strong> ${escapeHtml(m)}</li>`))
+    );
+    if (wflat.length) html += `<div class="tag-form-warnings"><strong>Warnings:</strong><ul>${wflat.join("")}</ul></div>`;
+    return html;
+}
+
+async function testTagOnQualys() {
+    const auth = getApiAuth();
+    if (!auth.platform) { showToast("Select a platform first", "error"); return; }
+    const form = { ..._gatherTagForm(), ...auth };
+    const resultEl = document.getElementById("tagFormTestResult");
+    resultEl.style.display = "";
+    resultEl.className = "tag-form-test loading";
+    resultEl.textContent = "Asking Qualys to evaluate the rule…";
+    try {
+        const resp = await apiFetch("/api/tags/test-rule", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(form),
+        });
+        const result = await resp.json();
+        if (!resp.ok || result.ok === false) {
+            resultEl.className = "tag-form-test error";
+            const errs = result.errors ? Object.entries(result.errors).map(([k, v]) => `${k}: ${v.join(", ")}`).join(" · ") : "";
+            resultEl.textContent = (result.message || "Test failed") + (errs ? " — " + errs : "");
+            return;
+        }
+        if (result.stage === "fallback") {
+            resultEl.className = "tag-form-test warn";
+            resultEl.textContent = "Qualys preview not available on this tenant — relying on local validation. " +
+                                   "(Fallback reason: " + (result.fallback_reason || "endpoint not exposed") + ")";
+            return;
+        }
+        const count = result.asset_count;
+        resultEl.className = "tag-form-test success";
+        resultEl.textContent = (count != null
+            ? "Qualys evaluated the rule against " + count.toLocaleString() + " matching asset(s)."
+            : "Qualys accepted the rule (asset count not returned).");
+    } catch (e) {
+        resultEl.className = "tag-form-test error";
+        resultEl.textContent = "Test failed: " + e.message;
+    }
+}
+
+async function submitTagForm() {
+    const auth = getApiAuth();
+    if (!auth.platform) { showToast("Select a platform first", "error"); return; }
+    const body = { ..._gatherTagForm(), ...auth };
+    const isEdit = _tagFormState.mode === "edit";
+    const url = isEdit ? `/api/tags/${_tagFormState.tagId}/update` : "/api/tags/create";
+    try {
+        const resp = await apiFetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+        });
+        const result = await resp.json();
+        if (!resp.ok || result.error) {
+            const detail = result.errors
+                ? Object.entries(result.errors).map(([k, v]) => `${k}: ${v.join(", ")}`).join(" · ")
+                : "";
+            showToast((result.error || "Save failed") + (detail ? " — " + detail : ""), "error");
+            return;
+        }
+        showToast(isEdit ? "Tag updated in Qualys" : ("Tag created in Qualys (id " + result.tag_id + ")"), "success");
+        closeModal("tagFormModal");
+        searchTags();
+        if (isEdit) showTagDetail(_tagFormState.tagId);
+    } catch (e) {
+        showToast("Save failed: " + e.message, "error");
+    }
+}
+
+function confirmTagDeleteFromForm() {
+    if (_tagFormState.mode !== "edit" || !_tagFormState.tagId) return;
+    openTagDeleteConfirm(_tagFormState.tagId);
+}
+
+let _pendingTagDelete = null;
+async function openTagDeleteConfirm(tagId) {
+    _pendingTagDelete = tagId;
+    document.getElementById("tagDeleteName").textContent = "Tag #" + tagId;
+    document.getElementById("tagDeleteImpact").textContent = "Loading impact preview…";
+    openModal("tagDeleteModal");
+    try {
+        const resp = await apiFetch("/api/tags/" + tagId + "/impact");
+        const data = await resp.json();
+        if (data.error) {
+            document.getElementById("tagDeleteImpact").textContent = data.error;
+            return;
+        }
+        document.getElementById("tagDeleteName").textContent = data.name || ("Tag #" + tagId);
+        const cc = data.child_count || 0;
+        let txt = cc === 0
+            ? "This tag has no children in your local view."
+            : `This tag has ${cc} child tag${cc === 1 ? "" : "s"} in your local view`;
+        if (data.child_sample && data.child_sample.length) {
+            txt += ": " + data.child_sample.map(c => escapeHtml(c.name || "tag " + c.tag_id)).join(", ");
+            if (cc > data.child_sample.length) txt += `, and ${cc - data.child_sample.length} more`;
+            txt += ".";
+        } else if (cc > 0) {
+            txt += ".";
+        }
+        document.getElementById("tagDeleteImpact").textContent = txt;
+    } catch (e) {
+        document.getElementById("tagDeleteImpact").textContent = "Could not load impact preview: " + e.message;
+    }
+}
+
+async function confirmTagDelete() {
+    if (!_pendingTagDelete) return;
+    const auth = getApiAuth();
+    try {
+        const resp = await apiFetch("/api/tags/" + _pendingTagDelete + "/delete", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(auth),
+        });
+        const result = await resp.json();
+        if (!resp.ok || result.error) {
+            showToast(result.error || "Delete failed", "error");
+            return;
+        }
+        showToast("Tag deleted in Qualys", "success");
+        const id = _pendingTagDelete;
+        _pendingTagDelete = null;
+        closeModal("tagDeleteModal");
+        // If the form modal is open for this tag, close it too — the
+        // tag no longer exists.
+        if (_tagFormState.mode === "edit" && _tagFormState.tagId === id) {
+            closeModal("tagFormModal");
+        }
+        // Refresh list and any open detail modal.
+        searchTags();
+        const detailModal = document.getElementById("tagDetailModal");
+        if (detailModal && detailModal.style.display !== "none") {
+            closeModal("tagDetailModal");
+        }
+    } catch (e) {
+        showToast("Delete failed: " + e.message, "error");
+    }
+}
+
+
+// ─── Tag Phase 2: Cross-environment migration ───────────────────────────
+// Mirrors the Policy migration trio. Workflow:
+//   1. exportTagToLocal — POST /api/tags/<id>/export with the SOURCE env
+//      credential. Backend pulls fresh JSON from Qualys and stashes it
+//      in tag_exports.
+//   2. (operator picks a destination credential)
+//   3. uploadTagToEnv — POST /api/tags/upload with that credential.
+//      Backend strips ids/timestamps and POSTs to the destination
+//      env's /qps/rest/2.0/create/am/tag.
+//
+// Import-from-file lets operators move bundles between machines without
+// the source credential being available locally — the JSON file itself
+// is the bridge.
+
+async function exportTagToLocal(tagId) {
+    const auth = getApiAuth();
+    if (!auth.platform) { showToast("Select a Qualys platform first", "error"); return; }
+    try {
+        const resp = await apiFetch("/api/tags/" + tagId + "/export", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(auth),
+        });
+        const result = await resp.json();
+        if (result.error) { showToast(result.error, "error"); return; }
+        showToast("Tag exported (" + (result.payload_size || 0).toLocaleString() + " bytes stored)", "success");
+        loadTagExports();
+    } catch (e) {
+        showToast("Export failed: " + e.message, "error");
+    }
+}
+
+async function loadTagExports() {
+    const container = document.getElementById("tagExportsList");
+    if (!container) return;  // panel not in DOM yet
+    try {
+        const resp = await apiFetch("/api/tags/exports");
+        const exports = await resp.json();
+        if (!Array.isArray(exports) || exports.length === 0) {
+            container.innerHTML = `<p class="muted-small">No exported tags yet. Open a tag's detail and click Export Tag.</p>`;
+            return;
+        }
+        container.innerHTML = exports.map(e => {
+            const date = e.exported_at ? new Date(e.exported_at).toLocaleString() : "";
+            const size = (e.payload_size || 0).toLocaleString();
+            const sysFlag = e.reserved_type ? `<span class="tag-system-pill-inline" title="System tag — cannot be migrated">SYSTEM</span>` : "";
+            const ruleType = e.rule_type ? `<span class="badge-pill">${escapeHtml(e.rule_type)}</span>` : "";
+            return `<div class="tag-export-row" data-tag-id="${e.tag_id}">
+                <div class="tag-export-meta">
+                    <strong>${escapeHtml(e.name || "Tag " + e.tag_id)}</strong> ${ruleType} ${sysFlag}
+                    <div class="muted-small">id ${e.tag_id} · exported ${escapeHtml(date)} · ${size} bytes</div>
+                </div>
+                <div class="tag-export-actions">
+                    <button class="btn-sm btn-outline" onclick="window.location.href='/api/tags/${e.tag_id}/export-download'">Download</button>
+                    <button class="btn-sm" onclick="openTagUploadDialog(${e.tag_id}, ${JSON.stringify(e.name || "").replace(/"/g, "&quot;")})" ${e.reserved_type ? "disabled title='System tag cannot be migrated'" : ""}>Upload to env…</button>
+                    <button class="btn-sm btn-outline btn-danger" onclick="deleteTagExport(${e.tag_id})">×</button>
+                </div>
+            </div>`;
+        }).join("");
+    } catch (e) {
+        container.innerHTML = `<p class="muted-small">Failed to load exports: ${escapeHtml(e.message)}</p>`;
+    }
+}
+
+async function deleteTagExport(tagId) {
+    if (!await themedConfirm("Remove this stored tag export? The original tag in Qualys is unaffected.")) return;
+    try {
+        const resp = await apiFetch("/api/tags/" + tagId + "/export", { method: "DELETE" });
+        const result = await resp.json();
+        if (result.error) { showToast(result.error, "error"); return; }
+        showToast("Export removed", "success");
+        loadTagExports();
+    } catch (e) {
+        showToast("Delete failed: " + e.message, "error");
+    }
+}
+
+async function importTagFromFile() {
+    const input = document.getElementById("tagImportFileInput");
+    if (!input || !input.files || input.files.length === 0) {
+        showToast("Pick a tag JSON file first", "error");
+        return;
+    }
+    const fd = new FormData();
+    fd.append("file", input.files[0]);
+    try {
+        const resp = await apiFetch("/api/tags/import-json", { method: "POST", body: fd });
+        const result = await resp.json();
+        if (result.error) { showToast(result.error, "error"); return; }
+        showToast("Imported tag " + result.tag_id + ": " + (result.name || ""), "success");
+        input.value = "";
+        loadTagExports();
+    } catch (e) {
+        showToast("Import failed: " + e.message, "error");
+    }
+}
+
+let _pendingTagUpload = null;  // {tagId, name}
+function openTagUploadDialog(tagId, name) {
+    _pendingTagUpload = { tagId, name };
+    const modal = document.getElementById("tagUploadModal");
+    if (!modal) {
+        showToast("Upload dialog not found", "error");
+        return;
+    }
+    document.getElementById("tagUploadSourceName").textContent = name || ("Tag " + tagId);
+    document.getElementById("tagUploadSourceId").textContent = "id " + tagId;
+    document.getElementById("tagUploadNewName").value = "";
+    document.getElementById("tagUploadParentId").value = "";
+    // Populate the destination credential picker from the existing creds
+    fetch("/api/credentials").then(r => r.json()).then(creds => {
+        const sel = document.getElementById("tagUploadCredSelect");
+        sel.innerHTML = '<option value="">-- pick destination credential --</option>'
+            + (Array.isArray(creds) ? creds.map(c =>
+                `<option value="${c.id}" data-platform="${c.platform_id || ""}">${escapeHtml(formatCredLabel(c))}</option>`
+            ).join("") : "");
+    }).catch(() => {});
+    openModal("tagUploadModal");
+}
+
+async function confirmTagUpload() {
+    if (!_pendingTagUpload) return;
+    const sel = document.getElementById("tagUploadCredSelect");
+    const credId = sel.value;
+    if (!credId) { showToast("Pick a destination credential", "error"); return; }
+    const platform = sel.options[sel.selectedIndex].dataset.platform || "";
+    const newName = document.getElementById("tagUploadNewName").value.trim();
+    const parentId = document.getElementById("tagUploadParentId").value.trim();
+    const body = {
+        source_tag_id: _pendingTagUpload.tagId,
+        credential_id: credId,
+        platform: platform,
+    };
+    if (newName) body.new_name = newName;
+    if (parentId) body.parent_tag_id = parentId;
+    try {
+        const resp = await apiFetch("/api/tags/upload", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+        });
+        const result = await resp.json();
+        if (result.error) {
+            showToast(result.error, "error");
+            return;
+        }
+        showToast("Uploaded — destination tag id " + (result.destination_tag_id || "?"), "success");
+        closeModal("tagUploadModal");
+        _pendingTagUpload = null;
+    } catch (e) {
+        showToast("Upload failed: " + e.message, "error");
+    }
+}
+
+
+async function setTagEditabilityOverride(tagId, value) {
+    try {
+        const body = { editability: value === "" ? null : value };
+        const resp = await apiFetch("/api/tags/" + tagId + "/editability", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+        });
+        const result = await resp.json();
+        if (result.error) { showToast(result.error, "error"); return; }
+        showToast("Editability updated", "success");
+        showTagDetail(tagId);
+        searchTags();
+    } catch (e) {
+        showToast("Failed to update editability: " + e.message, "error");
+    }
+}
+
+async function searchTagsPage(page) {
+    try {
+        const resp = await apiFetch("/api/tags?" + _tagSearchParams(page).toString());
+        const data = await resp.json();
+        renderTagResults(data);
+    } catch (e) { showToast("Search failed", "error"); }
+}
+
+// ─── Intelligence ────────────────────────────────────────────────────────
+const _intelState = {
+    page: 1,
+    severities: new Set(),    // {1..5}
+    chips: new Set(),         // 'patchable', 'pm_win', 'pm_lin', 'pm_any', 'pci_flag'
+    vulnTypes: new Set(['Vulnerability', 'Potential Vulnerability', 'Information Gathered']),
+};
+
+function _intelParams(page) {
+    const p = new URLSearchParams();
+    const q = document.getElementById("intelSearchInput").value.trim();
+    if (q) p.set("q", q);
+    if (_intelState.severities.size > 0) {
+        // Check if any severities are negated
+        const incSevs = [];
+        const excSevs = [];
+        for (const sev of _intelState.severities) {
+            if (_intelNegatedFilters.has(`sev:${sev}`)) excSevs.push(sev);
+            else incSevs.push(sev);
+        }
+        if (incSevs.length) p.set("severities", incSevs.join(","));
+        if (excSevs.length) p.set("exclude_severities", excSevs.join(","));
+    }
+    // Chip filters: "1" = include, "0" = exclude (negated)
+    const chipParams = {
+        patchable: "patchable", pm_any: "pm_any", pm_win: "pm_win",
+        pm_lin: "pm_lin", pci_flag: "pci_flag", disabled: "disabled",
+        threat_active: "threat_active", threat_cisa_kev: "threat_cisa_kev",
+        threat_exploit_public: "threat_exploit_public", threat_rce: "threat_rce",
+        threat_malware: "threat_malware", has_exploits: "has_exploits",
+    };
+    for (const [chip, param] of Object.entries(chipParams)) {
+        if (_intelState.chips.has(chip)) {
+            const negated = _intelNegatedFilters.has(`chip:${chip}`);
+            p.set(param, negated ? "0" : "1");
+        }
+    }
+    if (_intelState.vulnTypes.size === 0) {
+        p.set("vuln_types", "__NONE__");
+    } else if (_intelState.vulnTypes.size < 3) {
+        p.set("vuln_types", [..._intelState.vulnTypes].join(","));
+    }
+    const cat = document.getElementById("intelCategory");
+    if (cat && cat.value) {
+        if (_intelNegatedFilters.has("cat:val")) {
+            p.set("exclude_category", cat.value);
+        } else {
+            p.set("category", cat.value);
+        }
+    }
+    // Text search negation — if the search text tag is negated, prefix with NOT
+    if (q && _intelNegatedFilters.has("q:text")) {
+        p.delete("q");
+        p.set("exclude_q", q);
+    }
+    p.set("page", page || _intelState.page);
+    p.set("per_page", "50");
+    return p;
+}
+
+function toggleIntelSev(sev) {
+    if (_intelState.severities.has(sev)) _intelState.severities.delete(sev);
+    else _intelState.severities.add(sev);
+    document.querySelectorAll('.intel-chip.sev').forEach(b => {
+        const v = parseInt(b.dataset.sev);
+        b.classList.toggle('active', _intelState.severities.has(v));
+    });
+    _intelState.page = 1;
+    runIntel();
+}
+
+function toggleIntelChip(chip) {
+    if (_intelState.chips.has(chip)) _intelState.chips.delete(chip);
+    else _intelState.chips.add(chip);
+    const map = {
+        patchable: "intelChipPatch", pm_win: "intelChipPmW",
+        pm_lin: "intelChipPmL", pm_any: "intelChipPmA",
+        pci_flag: "intelChipPci", disabled: "intelChipDisabled",
+        threat_active: "intelChipActive", threat_cisa_kev: "intelChipCisa",
+        threat_exploit_public: "intelChipExploit", threat_rce: "intelChipRce",
+        threat_malware: "intelChipMalware", has_exploits: "intelChipHasExploits",
+    };
+    const el = document.getElementById(map[chip]);
+    if (el) el.classList.toggle('active', _intelState.chips.has(chip));
+    _intelState.page = 1;
+    runIntel();
+}
+
+function clearIntelFilters() {
+    _intelState.severities.clear();
+    _intelState.chips.clear();
+    _intelNegatedFilters.clear();
+    _intelState.vulnTypes = new Set(['Vulnerability', 'Potential Vulnerability', 'Information Gathered']);
+    document.getElementById('intelSearchInput').value = '';
+    document.getElementById('intelCategory').value = '';
+    document.getElementById('intelVtConfirmed').checked = true;
+    document.getElementById('intelVtPotential').checked = true;
+    document.getElementById('intelVtInfo').checked = true;
+    document.querySelectorAll('.intel-chip.sev,.intel-chip.active').forEach(b => b.classList.remove('active'));
+    _intelState.page = 1;
+    _updateIntelActiveFilters();
+    runIntel();
+}
+
+// ─── Active filter summary bar ───────────────────────────────────────────
+const _INTEL_FILTER_LABELS = {
+    patchable: "KB Patchable", pm_any: "PM Any", pm_win: "PM Windows",
+    pm_lin: "PM Linux", pci_flag: "PCI", disabled: "Disabled",
+    threat_active: "Active Attacks", threat_cisa_kev: "CISA KEV",
+    threat_exploit_public: "Public Exploit", threat_rce: "RCE",
+    threat_malware: "Malware", has_exploits: "Has Exploits",
+};
+
+let _intelFiltersExpanded = false;
+let _intelNegatedFilters = new Set(); // filters that are negated (NOT match)
+
+function _updateIntelActiveFilters() {
+    const container = document.getElementById("intelActiveFilters");
+    if (!container) return;
+    const parts = [];
+    const q = (document.getElementById("intelSearchInput").value || "").trim();
+    if (q) parts.push({ label: `"${q}"`, key: "q:text", remove: () => { document.getElementById("intelSearchInput").value = ""; runIntel(); } });
+    for (const sev of [..._intelState.severities].sort()) {
+        parts.push({ label: `Sev ${sev}`, key: `sev:${sev}`, remove: () => { _intelState.severities.delete(sev); toggleIntelSev(sev); } });
+    }
+    for (const chip of _intelState.chips) {
+        parts.push({ label: _INTEL_FILTER_LABELS[chip] || chip, key: `chip:${chip}`, remove: () => { toggleIntelChip(chip); } });
+    }
+    const cat = (document.getElementById("intelCategory") || {}).value;
+    if (cat) parts.push({ label: `Category: ${cat}`, key: "cat:val", remove: () => { document.getElementById("intelCategory").value = ""; runIntel(); } });
+
+    if (parts.length === 0) {
+        container.style.display = "none";
+        _intelFiltersExpanded = false;
+        return;
+    }
+    container.style.display = "block";
+    const expandClass = _intelFiltersExpanded ? " expanded" : "";
+    const expandBtn = parts.length > 4
+        ? `<button class="intel-filter-expand" onclick="_toggleIntelFilterExpand()">${_intelFiltersExpanded ? "Collapse" : "Expand"}</button>`
+        : "";
+    container.innerHTML = `<div class="intel-filter-row${expandClass}">
+        <span class="intel-filter-label">Active filters:</span>
+        <span class="intel-filter-tags">
+            ${parts.map((p, i) => {
+                const negated = _intelNegatedFilters.has(p.key);
+                const cls = negated ? "intel-filter-tag negated" : "intel-filter-tag";
+                const prefix = negated ? "NOT " : "";
+                return `<span class="${cls}" onclick="_toggleIntelFilterNegate(${i})" title="Click to toggle include/exclude">${escapeHtml(prefix + p.label)} <button onclick="event.stopPropagation();_removeIntelFilter(${i})">&times;</button></span>`;
+            }).join("")}
+        </span>
+        ${expandBtn}
+    </div>`;
+    container._removers = parts.map(p => p.remove);
+    container._keys = parts.map(p => p.key);
+}
+
+function _toggleIntelFilterNegate(idx) {
+    const container = document.getElementById("intelActiveFilters");
+    const key = container._keys && container._keys[idx];
+    if (!key) return;
+    if (_intelNegatedFilters.has(key)) {
+        _intelNegatedFilters.delete(key);
+    } else {
+        _intelNegatedFilters.add(key);
+    }
+    _updateIntelActiveFilters();
+    runIntel();
+}
+
+function _toggleIntelFilterExpand() {
+    _intelFiltersExpanded = !_intelFiltersExpanded;
+    _updateIntelActiveFilters();
+}
+
+function _removeIntelFilter(idx) {
+    const container = document.getElementById("intelActiveFilters");
+    // Also remove from negated set
+    if (container._keys && container._keys[idx]) {
+        _intelNegatedFilters.delete(container._keys[idx]);
+    }
+    if (container._removers && container._removers[idx]) {
+        container._removers[idx]();
+    }
+    _updateIntelActiveFilters();
+}
+
+// ─── Saved Intelligence Searches ─────────────────────────────────────────
+const _INTEL_SAVED_KEY = "qkbe_intel_saved_searches";
+
+function _getIntelSavedSearches() {
+    try { return JSON.parse(localStorage.getItem(_INTEL_SAVED_KEY) || "[]"); }
+    catch { return []; }
+}
+
+async function saveIntelSearch() {
+    const name = await themedPrompt("Name this search:");
+    if (!name) return;
+    const state = {
+        q: (document.getElementById("intelSearchInput").value || "").trim(),
+        severities: [..._intelState.severities],
+        chips: [..._intelState.chips],
+        vulnTypes: [..._intelState.vulnTypes],
+        category: (document.getElementById("intelCategory") || {}).value || "",
+    };
+    const saved = _getIntelSavedSearches();
+    saved.unshift({ name, state, timestamp: new Date().toISOString() });
+    if (saved.length > 20) saved.length = 20;
+    localStorage.setItem(_INTEL_SAVED_KEY, JSON.stringify(saved));
+    showToast(`Search saved: "${name}"`, "success");
+}
+
+function toggleSavedIntelSearches() {
+    const el = document.getElementById("intelSavedSearches");
+    if (el.style.display !== "none") { el.style.display = "none"; return; }
+    const saved = _getIntelSavedSearches();
+    if (saved.length === 0) {
+        el.innerHTML = '<div class="intel-saved-empty">No saved searches. Use "Save" to store the current filter set.</div>';
+    } else {
+        el.innerHTML = saved.map((s, i) => `
+            <div class="intel-saved-item">
+                <span class="intel-saved-name" onclick="loadIntelSearch(${i})">${escapeHtml(s.name)}</span>
+                <span class="intel-saved-meta">${_timeAgo(new Date(s.timestamp))}</span>
+                <button class="intel-saved-delete" onclick="deleteIntelSearch(${i})" title="Delete">&times;</button>
+            </div>`).join("");
+    }
+    el.style.display = "block";
+}
+
+function loadIntelSearch(idx) {
+    const saved = _getIntelSavedSearches();
+    const s = saved[idx];
+    if (!s) return;
+    // Restore state
+    document.getElementById("intelSearchInput").value = s.state.q || "";
+    _intelState.severities = new Set(s.state.severities || []);
+    _intelState.chips = new Set(s.state.chips || []);
+    _intelState.vulnTypes = new Set(s.state.vulnTypes || ['Vulnerability', 'Potential Vulnerability', 'Information Gathered']);
+    if (document.getElementById("intelCategory")) document.getElementById("intelCategory").value = s.state.category || "";
+    // Update UI checkboxes/chips
+    document.getElementById('intelVtConfirmed').checked = _intelState.vulnTypes.has('Vulnerability');
+    document.getElementById('intelVtPotential').checked = _intelState.vulnTypes.has('Potential Vulnerability');
+    document.getElementById('intelVtInfo').checked = _intelState.vulnTypes.has('Information Gathered');
+    document.querySelectorAll('.intel-chip.sev').forEach(b => {
+        b.classList.toggle('active', _intelState.severities.has(parseInt(b.dataset.sev)));
+    });
+    const chipMap = {
+        patchable: "intelChipPatch", pm_win: "intelChipPmW",
+        pm_lin: "intelChipPmL", pm_any: "intelChipPmA",
+        pci_flag: "intelChipPci", disabled: "intelChipDisabled",
+        threat_active: "intelChipActive", threat_cisa_kev: "intelChipCisa",
+        threat_exploit_public: "intelChipExploit", threat_rce: "intelChipRce",
+        threat_malware: "intelChipMalware", has_exploits: "intelChipHasExploits",
+    };
+    Object.entries(chipMap).forEach(([chip, elId]) => {
+        const el = document.getElementById(elId);
+        if (el) el.classList.toggle('active', _intelState.chips.has(chip));
+    });
+    document.getElementById("intelSavedSearches").style.display = "none";
+    _intelState.page = 1;
+    _updateIntelActiveFilters();
+    runIntel();
+    showToast(`Loaded: "${s.name}"`, "info");
+}
+
+function deleteIntelSearch(idx) {
+    const saved = _getIntelSavedSearches();
+    saved.splice(idx, 1);
+    localStorage.setItem(_INTEL_SAVED_KEY, JSON.stringify(saved));
+    toggleSavedIntelSearches(); // re-render
+}
+
+function _refreshIntelVulnTypes() {
+    _intelState.vulnTypes.clear();
+    if (document.getElementById('intelVtConfirmed').checked) _intelState.vulnTypes.add('Vulnerability');
+    if (document.getElementById('intelVtPotential').checked) _intelState.vulnTypes.add('Potential Vulnerability');
+    if (document.getElementById('intelVtInfo').checked) _intelState.vulnTypes.add('Information Gathered');
+}
+
+async function runIntel() {
+    _refreshIntelVulnTypes();
+    _updateIntelActiveFilters();
+    try {
+        const params = _intelParams(_intelState.page);
+        const [qidResp, statsResp] = await Promise.all([
+            apiFetch("/api/qids?" + params.toString()),
+            apiFetch("/api/intelligence/stats?" + params.toString()),
+        ]);
+        const data = await qidResp.json();
+        const stats = await statsResp.json();
+        if (data.error) { showToast(data.error, "error"); return; }
+        renderIntelStats(stats);
+        renderIntelTable(data);
+    } catch (e) {
+        showToast("Intelligence search failed: " + e.message, "error");
+    }
+}
+
+function renderIntelStats(s) {
+    const total = s.total_qids || 0;
+    const pct = (n) => total > 0 ? Math.round((n / total) * 100) + "%" : "0%";
+    // Each card has an action that adds its filter to the current state
+    const primaryCards = [
+        { l: "Filtered QIDs",      v: total.toLocaleString(),                                                          cls: "cyan",   action: null },
+        { l: "Active Attacks",     v: (s.threat_active || 0).toLocaleString(),                                         cls: "red",    action: "threat_active" },
+        { l: "CISA KEV",           v: (s.threat_cisa_kev || 0).toLocaleString(),                                       cls: "red",    action: "threat_cisa_kev" },
+        { l: "Public Exploits",    v: (s.threat_exploit_public || 0).toLocaleString(),                                 cls: "yellow", action: "threat_exploit_public" },
+        { l: "RCE",                v: (s.threat_rce || 0).toLocaleString(),                                            cls: "yellow", action: "threat_rce" },
+        { l: "Has Exploits",       v: (s.has_exploits || 0).toLocaleString(),                                          cls: "yellow", action: "has_exploits" },
+        { l: "KB Patchable",       v: (s.kb_patchable || 0).toLocaleString() + " (" + pct(s.kb_patchable || 0) + ")",  cls: "green",  action: "patchable" },
+        { l: "PM Any",             v: (s.pm_any || 0).toLocaleString() + " (" + pct(s.pm_any || 0) + ")",              cls: "green",  action: "pm_any" },
+        { l: "PCI",                v: (s.pci || 0).toLocaleString(),                                                   cls: "red",    action: "pci_flag" },
+    ];
+    const secondaryCards = [
+        { l: "With CVE",  v: (s.with_cve || 0).toLocaleString(), cls: "white",  action: null },
+        { l: "Sev 5",     v: (s.sev_5 || 0).toLocaleString(),    cls: "red",    action: "sev_5" },
+        { l: "Sev 4",     v: (s.sev_4 || 0).toLocaleString(),    cls: "yellow", action: "sev_4" },
+        { l: "Sev 3",     v: (s.sev_3 || 0).toLocaleString(),    cls: "yellow", action: "sev_3" },
+        { l: "Sev 2",     v: (s.sev_2 || 0).toLocaleString(),    cls: "white",  action: "sev_2" },
+        { l: "Sev 1",     v: (s.sev_1 || 0).toLocaleString(),    cls: "white",  action: "sev_1" },
+    ];
+
+    function cardHtml(c, sm) {
+        const clickAttr = c.action ? ` onclick="drillIntelStat('${c.action}')" style="cursor:pointer;"` : "";
+        const cardClass = sm ? "intel-stat-card intel-stat-card-sm" : "intel-stat-card";
+        const clickableClass = c.action ? " intel-stat-clickable" : "";
+        return `<div class="${cardClass}${clickableClass}"${clickAttr}>
+            <div class="intel-stat-label">${escapeHtml(c.l)}</div>
+            <div class="intel-stat-value ${c.cls}">${c.v}</div>
+        </div>`;
+    }
+
+    document.getElementById("intelStatStrip").innerHTML =
+        '<div class="intel-stat-row">' + primaryCards.map(c => cardHtml(c, false)).join("") + '</div>' +
+        '<div class="intel-stat-row intel-stat-row-sm">' + secondaryCards.map(c => cardHtml(c, true)).join("") + '</div>';
+}
+
+function drillIntelStat(action) {
+    // Severity drill-down: set ONLY that severity (replacing any existing selection)
+    if (action.startsWith("sev_")) {
+        const sev = parseInt(action.split("_")[1]);
+        _intelState.severities.clear();
+        _intelState.severities.add(sev);
+        document.querySelectorAll('.intel-chip.sev').forEach(b => {
+            const v = parseInt(b.dataset.sev);
+            b.classList.toggle('active', _intelState.severities.has(v));
+        });
+    } else {
+        // Chip-based filter: add to current chip set (additive narrowing)
+        if (!_intelState.chips.has(action)) {
+            _intelState.chips.add(action);
+            // Update chip button UI
+            const map = {
+                patchable: "intelChipPatch", pm_win: "intelChipPmW",
+                pm_lin: "intelChipPmL", pm_any: "intelChipPmA",
+                pci_flag: "intelChipPci", disabled: "intelChipDisabled",
+                threat_active: "intelChipActive", threat_cisa_kev: "intelChipCisa",
+                threat_exploit_public: "intelChipExploit", threat_rce: "intelChipRce",
+                threat_malware: "intelChipMalware", has_exploits: "intelChipHasExploits",
+            };
+            const el = document.getElementById(map[action]);
+            if (el) el.classList.add('active');
+        }
+    }
+    _intelState.page = 1;
+    runIntel();
+}
+
+function renderIntelTable(data) {
+    const items = data.results || [];
+    const container = document.getElementById("intelResults");
+    if (items.length === 0) {
+        container.innerHTML = '<div class="empty-state"><p>No QIDs match the current filters.</p></div>';
+        document.getElementById("intelPagination").style.display = "none";
+        return;
+    }
+    let html = '<div style="overflow-x:auto;"><table class="intel-table">';
+    html += '<thead><tr>'
+         + '<th>QID</th><th>Title</th><th>Sev</th><th>Type</th><th>Category</th>'
+         + '<th>KB</th><th>PM</th><th>PCI</th><th>CVEs</th><th>Published</th>'
+         + '</tr></thead><tbody>';
+    html += items.map(r => {
+        const sev = r.severity_level || 0;
+        const cveCount = (r.cves || []).length;
+        const cvePill = cveCount > 0
+            ? `<span class="cve-pill">${escapeHtml((r.cves || [])[0]?.cve_id || "")}${cveCount > 1 ? ' +' + (cveCount - 1) : ''}</span>`
+            : '<span class="badge-no">—</span>';
+        return `<tr onclick="showQidDetail(${r.qid})" style="cursor:pointer;">
+            <td><span class="qid-num">${r.qid}</span></td>
+            <td class="intel-title">${escapeHtml(r.title || "")}</td>
+            <td><span class="intel-sev intel-sev-${sev}">${sev}</span></td>
+            <td>${escapeHtml(r.vuln_type || "")}</td>
+            <td>${escapeHtml(r.category || "")}</td>
+            <td>${r.patchable ? '<span class="intel-yes">Yes</span>' : '<span class="badge-no">—</span>'}</td>
+            <td><span class="intel-pm-cell" data-qid="${r.qid}">…</span></td>
+            <td>${r.pci_flag ? '<span class="intel-pci">Yes</span>' : '<span class="badge-no">—</span>'}</td>
+            <td>${cvePill}</td>
+            <td class="dim-cell">${(r.published_datetime || "").substring(0, 10)}</td>
+        </tr>`;
+    }).join("");
+    html += '</tbody></table></div>';
+    container.innerHTML = html;
+    renderPagination("intel", data);
+    // PM cell hydration: one round-trip per row, but parallel
+    items.forEach(r => {
+        apiFetch("/api/qids/" + r.qid + "/patches").then(async resp => {
+            const body = await resp.json();
+            const cell = document.querySelector(`.intel-pm-cell[data-qid="${r.qid}"]`);
+            if (!cell) return;
+            const w = body.win_patches || 0;
+            const l = body.lin_patches || 0;
+            if (w + l === 0) {
+                cell.innerHTML = '<span class="badge-no">—</span>';
+            } else {
+                cell.innerHTML = (w ? `<span class="intel-pm-win">W:${w}</span> ` : '')
+                              + (l ? `<span class="intel-pm-lin">L:${l}</span>` : '');
+            }
+        }).catch(() => {});
+    });
+}
+
+async function searchIntelPage(page) {
+    _intelState.page = page;
+    runIntel();
+}
+
 function renderPolicyResults(data) {
     const container = document.getElementById("policyResults");
     const items = data.results || [];
@@ -2748,7 +6455,7 @@ async function deleteSelectedPolicies() {
     const cbs = document.querySelectorAll("#policyResults .policy-select-cb:checked");
     const ids = Array.from(cbs).map(cb => parseInt(cb.dataset.policyId));
     if (ids.length === 0) { showToast("No policies selected", "info"); return; }
-    if (!confirm("Delete " + ids.length + " selected " + (ids.length === 1 ? "policy" : "policies") + "? This cannot be undone.")) return;
+    if (!await themedConfirm("Delete " + ids.length + " selected " + (ids.length === 1 ? "policy" : "policies") + "? This cannot be undone.")) return;
     try {
         const resp = await apiFetch("/api/policies", {
             method: "DELETE",
@@ -2769,7 +6476,7 @@ async function deleteSelectedPolicies() {
 
 async function deleteSinglePolicy() {
     if (!_policyDetailId) return;
-    if (!confirm("Delete policy #" + _policyDetailId + "? This cannot be undone.")) return;
+    if (!await themedConfirm("Delete policy #" + _policyDetailId + "? This cannot be undone.")) return;
     try {
         const resp = await apiFetch("/api/policies", {
             method: "DELETE",
@@ -3548,6 +7255,8 @@ function navigatePage(prefix, page) {
     else if (prefix === "cid") { searchCidsPage(page); }
     else if (prefix === "policy") { searchPoliciesPage(page); }
     else if (prefix === "mandate") { searchMandatesPage(page); }
+    else if (prefix === "tag") { searchTagsPage(page); }
+    else if (prefix === "intel") { searchIntelPage(page); }
 }
 
 async function searchQidsPage(page) {
@@ -3627,6 +7336,8 @@ const _dataTypeLabels = {
     cids: "CIDs (Controls)",
     policies: "Policies",
     mandates: "Mandates",
+    tags: "Tags",
+    pm_patches: "PM Patch Catalog",
 };
 
 async function showDeltaSyncModal(type) {
@@ -3685,7 +7396,7 @@ async function showDeltaSyncModal(type) {
             // Pre-fill with existing values
             const modeRadio = document.querySelector('input[name="deltaSyncMode"][value="schedule"]');
             if (modeRadio) { modeRadio.checked = true; toggleScheduleOptions(); }
-            if (sched.start_date) dateInput.value = sched.start_date;
+            if (sched.start_date && sched.start_date >= today) dateInput.value = sched.start_date;
             if (sched.start_time) document.getElementById("schedStartTime").value = sched.start_time;
             const existFreqRadio = document.querySelector('input[name="schedFreq"][value="' + sched.frequency + '"]');
             if (existFreqRadio) existFreqRadio.checked = true;
@@ -3790,6 +7501,8 @@ function updateScheduleBadges(schedules) {
         cids: "schedBadgeCids",
         policies: "schedBadgePolicies",
         mandates: "schedBadgeMandates",
+        tags: "schedBadgeTags",
+        pm_patches: "schedBadgePmPatches",
     };
 
     // Hide all badges first
@@ -3863,6 +7576,7 @@ async function loadDashboard() {
         const stats = await statsResp.json();
         const sync = await syncResp.json();
         renderDataOverview(sync);
+        renderThreatOverview(stats.threat_intel || {});
         renderSeverityChart(stats.severity || {});
         renderCriticalityChart(stats.criticality || {});
         renderCategoriesChart(stats.categories_top15 || []);
@@ -3882,17 +7596,33 @@ function renderDataOverview(sync) {
         { key: "cids", elCount: "dashCidCount", elSync: "dashCidSync" },
         { key: "policies", elCount: "dashPolicyCount", elSync: "dashPolicySync" },
         { key: "mandates", elCount: "dashMandateCount", elSync: "dashMandateSync" },
+        { key: "tags", elCount: "dashTagCount", elSync: "dashTagSync" },
+        { key: "pm_patches", elCount: "dashPmCount", elSync: "dashPmSync" },
     ];
     types.forEach(t => {
         const s = sync[t.key] || {};
-        document.getElementById(t.elCount).textContent = (s.record_count || 0).toLocaleString();
+        const el = document.getElementById(t.elCount);
+        const syncEl = document.getElementById(t.elSync);
+        if (!el) return;
+        el.textContent = (s.record_count || 0).toLocaleString();
         if (s.last_sync) {
-            const d = new Date(s.last_sync);
-            document.getElementById(t.elSync).textContent = "Synced " + _timeAgo(d);
+            syncEl.textContent = "Synced " + _timeAgo(new Date(s.last_sync));
         } else {
-            document.getElementById(t.elSync).textContent = "Not synced";
+            syncEl.textContent = "Not synced";
         }
     });
+}
+
+function renderThreatOverview(ti) {
+    const el = (id, val) => {
+        const e = document.getElementById(id);
+        if (e) e.textContent = (val || 0).toLocaleString();
+    };
+    el("dashThreatActive", ti.active_attacks);
+    el("dashThreatCisa", ti.cisa_kev);
+    el("dashThreatExploit", ti.exploit_public);
+    el("dashThreatRce", ti.rce);
+    el("dashThreatHasExploits", ti.has_exploits);
 }
 
 function _timeAgo(date) {
@@ -4044,6 +7774,8 @@ function renderSyncHealth(sync) {
         { key: "cids", label: "CIDs (Controls)" },
         { key: "policies", label: "Policies" },
         { key: "mandates", label: "Mandates (Frameworks)" },
+        { key: "tags", label: "Tags" },
+        { key: "pm_patches", label: "PM Patch Catalog" },
     ];
     tbody.innerHTML = types.map(t => {
         const s = sync[t.key] || {};
@@ -4141,6 +7873,9 @@ function getFilterParams(type) {
         if (vulnType) p.set("vuln_type", vulnType);
         const pci = document.getElementById("qidPciFilter").value;
         if (pci) p.set("pci_flag", pci);
+        const _expDisEl = document.getElementById("qidDisabledFilter");
+        const _expDis = _expDisEl ? _expDisEl.value : "";
+        if (_expDis !== "") p.set("disabled", _expDis);
         const disc = document.getElementById("qidDiscoveryFilter").value;
         if (disc) p.set("discovery_method", disc);
         const cvssBase = document.getElementById("qidCvssBaseMin").value;
