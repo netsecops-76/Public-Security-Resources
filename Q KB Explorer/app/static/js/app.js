@@ -6071,7 +6071,7 @@ function _updateIntelActiveFilters() {
     const q = (document.getElementById("intelSearchInput").value || "").trim();
     if (q) parts.push({ label: `"${q}"`, key: "q:text", remove: () => { document.getElementById("intelSearchInput").value = ""; runIntel(); } });
     for (const sev of [..._intelState.severities].sort()) {
-        parts.push({ label: `Sev ${sev}`, key: `sev:${sev}`, remove: () => { _intelState.severities.delete(sev); toggleIntelSev(sev); } });
+        parts.push({ label: `Sev ${sev}`, key: `sev:${sev}`, remove: () => { toggleIntelSev(sev); } });
     }
     for (const chip of _intelState.chips) {
         parts.push({ label: _INTEL_FILTER_LABELS[chip] || chip, key: `chip:${chip}`, remove: () => { toggleIntelChip(chip); } });
