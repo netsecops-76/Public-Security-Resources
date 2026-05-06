@@ -1322,6 +1322,14 @@ def _ensure_list(val):
     return [val]
 
 
+def _xml_text(val):
+    # xmltodict turns `<BASE source="cve">5.0</BASE>` into
+    # `{"@source": "cve", "#text": "5.0"}`. Unwrap to the scalar.
+    if isinstance(val, dict):
+        return val.get("#text")
+    return val
+
+
 def _fts5_safe(q: str) -> str:
     """Prepare a user query for FTS5 by quoting each token individually.
 
@@ -1353,16 +1361,16 @@ def upsert_vuln(vuln: dict, conn=None):
 
     # Extract CVSS data
     cvss = vuln.get("CVSS", {}) or {}
-    cvss_base = cvss.get("BASE") or cvss.get("base")
-    cvss_temporal = cvss.get("TEMPORAL") or cvss.get("temporal")
+    cvss_base = _xml_text(cvss.get("BASE") or cvss.get("base"))
+    cvss_temporal = _xml_text(cvss.get("TEMPORAL") or cvss.get("temporal"))
     cvss_vector = None
     access = cvss.get("ACCESS", {}) or {}
     if access:
         cvss_vector = f"AV:{access.get('VECTOR', '?')}"
 
     cvss3 = vuln.get("CVSS_V3", {}) or {}
-    cvss3_base = cvss3.get("BASE") or cvss3.get("base")
-    cvss3_temporal = cvss3.get("TEMPORAL") or cvss3.get("temporal")
+    cvss3_base = _xml_text(cvss3.get("BASE") or cvss3.get("base"))
+    cvss3_temporal = _xml_text(cvss3.get("TEMPORAL") or cvss3.get("temporal"))
     cvss3_vector = cvss3.get("ATTACK_VECTOR") or cvss3.get("VECTOR_STRING")
     cvss3_version = cvss3.get("CVSS3_VERSION")
 

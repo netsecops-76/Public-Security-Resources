@@ -268,6 +268,31 @@ def test_upsert_and_get_vuln():
     assert vuln["cvss3_base"] == 8.1
 
 
+def test_upsert_vuln_handles_cvss_with_xml_attributes():
+    # Qualys returns `<BASE source="cve">5.0</BASE>`, which xmltodict
+    # parses into `{"@source": "cve", "#text": "5.0"}`. Regression for
+    # `float() argument must be a string or a real number, not 'dict'`.
+    upsert_vuln({
+        "QID": "12346",
+        "TITLE": "CVSS-with-attrs",
+        "SEVERITY_LEVEL": "3",
+        "CVSS": {
+            "BASE": {"@source": "cve", "#text": "5.0"},
+            "TEMPORAL": {"@source": "cve", "#text": "4.1"},
+        },
+        "CVSS_V3": {
+            "BASE": {"@source": "nvd", "#text": "6.4"},
+            "TEMPORAL": {"@source": "nvd", "#text": "5.5"},
+        },
+    })
+    vuln = get_vuln(12346)
+    assert vuln is not None
+    assert vuln["cvss_base"] == 5.0
+    assert vuln["cvss_temporal"] == 4.1
+    assert vuln["cvss3_base"] == 6.4
+    assert vuln["cvss3_temporal"] == 5.5
+
+
 def test_search_vulns_fts():
     # Insert a couple of vulns
     upsert_vuln({"QID": "100", "TITLE": "Apache Struts Remote Code Execution", "SEVERITY_LEVEL": "5", "CATEGORY": "Web Server"})
