@@ -1112,7 +1112,7 @@
             <div id="autoUpdateSettings" style="display:none;">
                 <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:14px;">
                     <label style="font-size:13px;font-weight:500;">Schedule:</label>
-                    <select id="autoUpdateDay" style="padding:4px 8px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-card);color:var(--fg);font-size:13px;">
+                    <select id="autoUpdateDay">
                         <option value="0">Sunday</option>
                         <option value="1">Monday</option>
                         <option value="2">Tuesday</option>
@@ -1121,8 +1121,8 @@
                         <option value="5">Friday</option>
                         <option value="6" selected>Saturday</option>
                     </select>
-                    <span style="font-size:13px;">at</span>
-                    <input type="time" id="autoUpdateTime" value="00:00" style="padding:4px 8px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-card);color:var(--fg);font-size:13px;">
+                    <span>at</span>
+                    <input type="time" id="autoUpdateTime" value="00:00">
                     <span id="autoUpdateTzDisplay" style="font-size:12px;opacity:0.6;"></span>
                     <button class="btn-sm btn-primary" id="autoUpdateSaveBtn" onclick="saveAutoUpdateConfig()" style="margin-left:auto;">Save Changes</button>
                 </div>
