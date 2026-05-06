@@ -1284,6 +1284,14 @@ async function deleteCredential(credId) {
         }
         showToast("Credential deleted", "info");
         syncVaultFromServer();
+        // Re-render the open dropdown so the deleted entry disappears
+        // immediately. Without this, the row stays visible until the
+        // dropdown is closed and reopened, and users click Delete
+        // repeatedly thinking nothing happened.
+        const dropdown = document.getElementById("credPickerDropdown");
+        if (dropdown && dropdown.style.display !== "none") {
+            populateCredentialPicker();
+        }
     } catch (e) {
         showToast("Failed to delete credential", "error");
     }
