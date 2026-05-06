@@ -4,24 +4,59 @@
 
 ## [Unreleased]
 
+_No changes pending release._
+
+## [v2.3.0] — 2026-05-06 — Automatic Updates Scheduling, Apply UX, PM QQL Fix
+
 ### Added
-- **Pre-flight collision check on migration**: checks destination for existing tag names before migration starts. Per-tag options: rename (editable suffix), skip, skip all, rename all. Renames and skip lists passed to migration thread.
-- **EASM, DNS SINKHOLE, SEM added to system tag list**: EASM, EASM Confidence High/Medium/Low, DNS SINKHOLE, and SEM are now correctly classified as Qualys-provisioned system tags.
+- **Automatic Updates schedule**: new `/api/update/schedule` (GET + POST) backend backed by an `auto_update_config` single-row table. APScheduler cron job invokes `apply_update()` on the configured day-of-week and time, recording last_check / last_status / last_version / last_error before the master-restart fires so the result survives the container reload. Restored from DB on `init_scheduler` startup. Fills out the previously-orphaned Settings → Automatic Updates UI that had been posting to a non-existent endpoint.
+- **Apply Update progress modal**: non-dismissible modal with phase-tracked spinner — Downloading → Restarting services → Waiting for app to come back online. Auto-reload triggers on the server down→up transition (proves the master actually restarted and avoids the prior race where the still-up old worker would falsely satisfy the poll right before SIGTERM). Failsafes: reload anyway after 30s of continuous "up" responses; surface a "Refresh now" button after 90s.
+- **Vault session minted on credential save**: `POST /api/credentials` now sets the `qkbe-vault-unlocked` HttpOnly cookie and stores a session token. The first sync after Save Credential no longer triggers the re-auth modal asking for the password the user just typed. `max_age` is honored from the existing session-timeout setting.
+- **UPDATING.md rewrite**: leads with symptom and recovery steps for users hit by the v2.1 silent-update bug, explains the `--preload` pitfall plainly, documents the v2.2+ behavior (master SIGTERM, ~5–10s downtime, browser refresh).
+
+### Fixed
+- **PM Patches delta sync rejected with `Invalid QQL`**: the QQL `lastModified:>"<watermark>"` was wrong on two counts — the patch entity has no `lastModified` token (correct token is `modifiedDate`) and date comparisons use bare `>` not `:>`. Switched to `modifiedDate>"<watermark>"`. Added a one-shot fallback that retries the first page without the date predicate if Qualys still returns a QQL 400 on an older backend, degrading to full-list ingest (idempotent upserts) instead of aborting the whole sync.
+- **Automatic Updates schedule disable robustness**: the POST handler previously 400'd when `day_of_week` / `hour` / `minute` were missing or invalid even when the user was just turning the feature OFF. Strict validation now only runs on enable; on disable we accept whatever was sent (falling back to existing config or defaults), clamp out-of-range values, and always call `remove_auto_update_schedule`. The feature can always be turned off cleanly. `_execute_auto_update` also re-checks `enabled` at fire time so a job that was already triggered when the user disabled doesn't apply an update anyway.
+- **Auto-update schema migration**: if `auto_update_config` exists on a persistent volume without the `last_version` column (an earlier 9-column shape), `init_db()` now ALTER TABLE adds it.
+- **Automatic Updates dropdown unreadable**: day-of-week select and time input had inline `style=` attributes referencing two undefined CSS variables (`--bg-card`, `--fg`) that don't exist in `style.css`, causing grey-on-transparent text. Removed the inline overrides; the default `input, select, textarea` rule now applies.
+
+### Docs
+- **CHANGELOG revived**: backfilled v2.2.0 and v2.3.0 entries from git history. ROADMAP's "Planned (v2.2)" section renamed to v2.3 with the original three planned items still present; new "Completed (v2.2 — Sync Robustness, UX, Updater)" section added enumerating what actually shipped.
+- **BUGS.md updated**: BUG-006 through BUG-016 added covering the bugs fixed in this and the v2.2 wave.
+- **ARCHITECTURE.md**: scheduler row mentions auto-update jobs, updater row notes master-restart + `--preload` removal, `auto_update_config` added to the schema list, "Last updated" bumped to 2026-05-06.
+- **update-manifest.json**: 2.2.0 → 2.3.0; notes summarize the auto-update scheduling feature, apply-progress modal, vault session on save, PM QQL fix, and the auto-update toggle.
+
+
+## [v2.2.0] — 2026-05-06 — Sync Robustness, UX, Updater Rewrite
+
+### Fixed
+- **QID sync crash on CVSS scores with attributes** (Issue #4): Qualys returns CVSS BASE/TEMPORAL with a `source` attribute (e.g. `<BASE source="cve">5.0</BASE>`), which xmltodict parses to `{"@source": "cve", "#text": "5.0"}`. `float({...})` raised `float() argument must be a string or a real number, not 'dict'` and aborted the page's batch upsert. Added `_xml_text` helper that unwraps `#text` from a dict-shaped XML value and routed CVSS v2/v3 base + temporal reads through it.
+- **init_db crashloop on malformed correlation_json** (Issue #5): `_backfill_threat_columns` raised `'str' object has no attribute 'get'` on rows where `EXPLT_SRC` or `MW_SRC` was a bare string (xmltodict's collapsed text-only-element shape). The function ran on every gunicorn start, so a single malformed row kept the container in a permanent restart loop. Added isinstance guards inside both loops, and wrapped each row's processing in try/except so a malformed blob logs a WARNING and is skipped rather than aborting `init_db`.
+- **QID Full Sync abort on CORRELATION shape variations** (Issue #6): same defect class as #5 but in the live ingest path of `upsert_vuln`. xmltodict can produce four shapes for `EXPLT_SRC` / `MW_SRC` — dict, list-of-dicts, bare string, None entry from an empty self-closing element — and the loops only handled the first two. The None-entry case was the prod-failing shape. Extracted `_count_correlation_exploits_and_malware` helper that tolerates all four shapes at every nesting level and consolidated the two duplicated implementations (in `upsert_vuln` and `_backfill_threat_columns`) into a single call site. Audited every other upsert path; only `upsert_vuln` was affected.
+- **Per-record sync errors aborted whole sync**: each per-record `upsert_X` call across all six sync paths (QID main + backfill, CIDs, Policies, Tags initial + enrichment, PM Patches) is now wrapped in try/except. A single freak record logs a WARNING with its ID and is skipped; the sync now finishes with N-1 records instead of zero.
+- **In-app updater silently no-op'd under gunicorn `--preload`**: Apply Update returned `status: ok` and advanced `.current_version`, but the running app behavior was unchanged. `--preload` causes the master to import `app.main` once and fork workers via copy-on-write; the updater's worker-only kill let the master respawn workers from the cached old code regardless of disk changes. Updater now SIGTERMs the master (PID 1) on a 2s background-thread delay so the apply response can flush; `restart: unless-stopped` brings the container back up with a fresh import. Entrypoint also drops `--preload` as defense in depth.
+
+### Added
+- **Welcome tip on Settings tab for fresh installs**: when no credentials are saved, the app routes the initial tab to Settings and reveals a tip walking the user through saving a credential and running their first Full Sync. Auto-hides the moment a credential is saved (and reappears if the user later deletes all credentials — same fresh-install state).
+- **Save Credential gated on a successful Test Connection**: a typo in the username (or any auth field) used to land in the vault and surface later as confusing Qualys errors. Save now requires a successful Test Connection against the exact `{username, password, platform}` currently in the form. Snapshot is invalidated on any change to those three fields, on Clear/Disconnect, or when an unmasked vault password is typed into. Save button is visually disabled until a valid test exists.
+- **Credential picker re-renders immediately after delete**: previously the deleted row stayed visible until the dropdown was closed and reopened.
+- **Pre-flight collision check on tag migration**: checks destination for existing tag names before migration starts. Per-tag options: rename (editable suffix), skip, skip all, rename all.
+- **EASM, DNS SINKHOLE, SEM in system tag list**: correctly classified as Qualys-provisioned system tags.
 - **CLOUD_ASSET rule type → connector origin**: all tags with CLOUD_ASSET rule type are classified as connector-dependent (require matching cloud connectors in destination).
 - **Schedule badges for Tags and PM Patches**: delta sync schedule badges now display on Tags and PM Patches rows in Settings.
 
-### Fixed
+### Changed
+- **"Organizer" tag origin renamed to "Static"** to match Qualys terminology. Tag origin values are now: `rule_based`, `static`, `connector`, `system`.
+- **System tag list is exact-name only**: no prefix pattern matching (e.g. `EASM*`) — prevents false positives on user-created tags.
+
+### Fixed (other)
 - **Tag detail crash**: missing `isEditable` variable after banner rewrite caused "Failed to load tag detail" on every click.
 - **Tag ownership filter**: "Qualys-managed only" filter now uses `tag_origin='system'` instead of `is_user_created=0` which was always empty.
 - **SYSTEM pill accuracy**: driven by `tag_origin` (heuristic name list) instead of `is_user_created` (unreliable — Qualys API doesn't expose `reservedType`).
 - **Tag classification persistence**: `_fix_tag_classification()` runs as a dedicated function with its own DB connection after `init_db`, guaranteeing the UPDATE commits regardless of `executescript` transaction state.
-- **Auth-required toasts suppressed**: no more error toasts before login when vault is locked. `showToast` silently drops "Authentication required" errors since the login modal is already handling the flow.
+- **Auth-required toasts suppressed**: no more error toasts before login when vault is locked.
 - **Delta sync schedule date**: defaults to today when existing schedule has a past start date.
 - **Migration "no tags" error**: paginated tag ID fetch (respects 500 per_page API limit).
-
-### Changed
-- **"Organizer" renamed to "Static"**: matches Qualys terminology. Tag origin values are now: `rule_based`, `static`, `connector`, `system`.
-- **System tag list is exact-name only**: no prefix pattern matching (e.g. `EASM*`) — prevents false positives on user-created tags.
 
 
 ## [v2.1.0] — 2026-05-03 — Intelligence, Threat Intel, Tag Origin, PM Linux Fix
