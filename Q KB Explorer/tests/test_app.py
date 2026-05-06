@@ -293,6 +293,42 @@ def test_upsert_vuln_handles_cvss_with_xml_attributes():
     assert vuln["cvss3_temporal"] == 5.5
 
 
+def test_backfill_threat_columns_tolerates_malformed_correlation_json():
+    # Regression for the crashloop where _backfill_threat_columns blew up
+    # on init_db() because correlation_json had EXPLT_SRC as a bare string
+    # (xmltodict's collapsed text-only-element shape). One malformed row
+    # must not abort the backfill — and must not crash startup.
+    import json as _json
+    from app.database import _backfill_threat_columns, get_db, upsert_vuln, get_vuln
+
+    upsert_vuln({"QID": "55001", "TITLE": "Bad EXPLT_SRC", "SEVERITY_LEVEL": "3"})
+    upsert_vuln({"QID": "55002", "TITLE": "Bad MW_SRC", "SEVERITY_LEVEL": "3"})
+    upsert_vuln({"QID": "55003", "TITLE": "Good shape", "SEVERITY_LEVEL": "3"})
+
+    bad_explt = _json.dumps({"EXPLOITS": {"EXPLT_SRC": "unexpected-string"}})
+    bad_mw = _json.dumps({"MALWARE": {"MW_SRC": "unexpected-string"}})
+    good = _json.dumps({
+        "EXPLOITS": {"EXPLT_SRC": {"EXPLT_LIST": {"EXPLT": [{"REF": "EDB-1"}, {"REF": "EDB-2"}]}}},
+    })
+    ti = _json.dumps({"THREAT_INTEL": [{"#text": "Active_Attacks"}]})
+
+    with get_db() as conn:
+        for qid, corr in ((55001, bad_explt), (55002, bad_mw), (55003, good)):
+            conn.execute(
+                "UPDATE vulns SET correlation_json = ?, threat_intelligence_json = ? WHERE qid = ?",
+                (corr, ti, qid),
+            )
+        # Must not raise.
+        _backfill_threat_columns(conn)
+
+    # Bad rows survive with zeroed exploit_count; good row is computed correctly.
+    assert get_vuln(55001)["exploit_count"] == 0
+    assert get_vuln(55002)["exploit_count"] == 0
+    assert get_vuln(55003)["exploit_count"] == 2
+    # Threat-intel flag still backfills on the bad rows.
+    assert get_vuln(55001)["threat_active_attacks"] == 1
+
+
 def test_search_vulns_fts():
     # Insert a couple of vulns
     upsert_vuln({"QID": "100", "TITLE": "Apache Struts Remote Code Execution", "SEVERITY_LEVEL": "5", "CATEGORY": "Web Server"})

@@ -893,72 +893,92 @@ def _backfill_threat_columns(conn):
         "AND threat_intelligence_json != 'null'"
     ).fetchall()
     for row in rows:
+        # Best-effort recompute. A malformed blob on any single row must
+        # not be able to abort init_db() and crashloop the container.
         try:
-            ti = json.loads(row[1]) if row[1] else {}
-        except (json.JSONDecodeError, TypeError):
-            ti = {}
-        try:
-            corr = json.loads(row[2]) if row[2] else {}
-        except (json.JSONDecodeError, TypeError):
-            corr = {}
+            try:
+                ti = json.loads(row[1]) if row[1] else {}
+            except (json.JSONDecodeError, TypeError):
+                ti = {}
+            try:
+                corr = json.loads(row[2]) if row[2] else {}
+            except (json.JSONDecodeError, TypeError):
+                corr = {}
 
-        ti_tags_raw = ti.get("THREAT_INTEL") or []
-        if isinstance(ti_tags_raw, dict):
-            ti_tags_raw = [ti_tags_raw]
-        ti_tags = set()
-        for t in ti_tags_raw:
-            if isinstance(t, dict):
-                ti_tags.add(t.get("#text", ""))
-            elif isinstance(t, str):
-                ti_tags.add(t)
+            ti_tags_raw = ti.get("THREAT_INTEL") or []
+            if isinstance(ti_tags_raw, dict):
+                ti_tags_raw = [ti_tags_raw]
+            ti_tags = set()
+            for t in ti_tags_raw:
+                if isinstance(t, dict):
+                    ti_tags.add(t.get("#text", ""))
+                elif isinstance(t, str):
+                    ti_tags.add(t)
 
-        exploit_count = 0
-        malware_count = 0
-        if corr:
-            exploits_section = corr.get("EXPLOITS", {}) or {}
-            explt_srcs = exploits_section.get("EXPLT_SRC") or []
-            if isinstance(explt_srcs, dict):
-                explt_srcs = [explt_srcs]
-            for src in explt_srcs:
-                explt_list = (src.get("EXPLT_LIST") or {}).get("EXPLT") or []
-                if isinstance(explt_list, dict):
-                    explt_list = [explt_list]
-                exploit_count += len(explt_list)
-            malware_section = corr.get("MALWARE", {}) or {}
-            mw_srcs = malware_section.get("MW_SRC") or []
-            if isinstance(mw_srcs, dict):
-                mw_srcs = [mw_srcs]
-            for src in mw_srcs:
-                mw_list = (src.get("MW_LIST") or {}).get("MW_INFO") or []
-                if isinstance(mw_list, dict):
-                    mw_list = [mw_list]
-                malware_count += len(mw_list)
+            exploit_count = 0
+            malware_count = 0
+            if corr:
+                exploits_section = corr.get("EXPLOITS", {}) or {}
+                explt_srcs = exploits_section.get("EXPLT_SRC") or []
+                if isinstance(explt_srcs, dict):
+                    explt_srcs = [explt_srcs]
+                elif not isinstance(explt_srcs, list):
+                    explt_srcs = []
+                for src in explt_srcs:
+                    if not isinstance(src, dict):
+                        continue
+                    explt_list = (src.get("EXPLT_LIST") or {}).get("EXPLT") or []
+                    if isinstance(explt_list, dict):
+                        explt_list = [explt_list]
+                    elif not isinstance(explt_list, list):
+                        explt_list = []
+                    exploit_count += len(explt_list)
+                malware_section = corr.get("MALWARE", {}) or {}
+                mw_srcs = malware_section.get("MW_SRC") or []
+                if isinstance(mw_srcs, dict):
+                    mw_srcs = [mw_srcs]
+                elif not isinstance(mw_srcs, list):
+                    mw_srcs = []
+                for src in mw_srcs:
+                    if not isinstance(src, dict):
+                        continue
+                    mw_list = (src.get("MW_LIST") or {}).get("MW_INFO") or []
+                    if isinstance(mw_list, dict):
+                        mw_list = [mw_list]
+                    elif not isinstance(mw_list, list):
+                        mw_list = []
+                    malware_count += len(mw_list)
 
-        conn.execute(
-            """UPDATE vulns SET
-                threat_active_attacks = ?,
-                threat_exploit_public = ?,
-                threat_easy_exploit = ?,
-                threat_malware = ?,
-                threat_rce = ?,
-                threat_priv_escalation = ?,
-                threat_cisa_kev = ?,
-                exploit_count = ?,
-                malware_count = ?
-            WHERE qid = ?""",
-            (
-                1 if "Active_Attacks" in ti_tags else 0,
-                1 if "Exploit_Public" in ti_tags else 0,
-                1 if "Easy_Exploit" in ti_tags else 0,
-                1 if "Malware" in ti_tags else 0,
-                1 if "Remote_Code_Execution" in ti_tags else 0,
-                1 if "Privilege_Escalation" in ti_tags else 0,
-                1 if "Cisa_Known_Exploited_Vulns" in ti_tags else 0,
-                exploit_count,
-                malware_count,
-                row[0],
-            ),
-        )
+            conn.execute(
+                """UPDATE vulns SET
+                    threat_active_attacks = ?,
+                    threat_exploit_public = ?,
+                    threat_easy_exploit = ?,
+                    threat_malware = ?,
+                    threat_rce = ?,
+                    threat_priv_escalation = ?,
+                    threat_cisa_kev = ?,
+                    exploit_count = ?,
+                    malware_count = ?
+                WHERE qid = ?""",
+                (
+                    1 if "Active_Attacks" in ti_tags else 0,
+                    1 if "Exploit_Public" in ti_tags else 0,
+                    1 if "Easy_Exploit" in ti_tags else 0,
+                    1 if "Malware" in ti_tags else 0,
+                    1 if "Remote_Code_Execution" in ti_tags else 0,
+                    1 if "Privilege_Escalation" in ti_tags else 0,
+                    1 if "Cisa_Known_Exploited_Vulns" in ti_tags else 0,
+                    exploit_count,
+                    malware_count,
+                    row[0],
+                ),
+            )
+        except Exception as e:
+            logger.warning(
+                "threat-column backfill: skipping QID %s (%s: %s)",
+                row[0], type(e).__name__, e,
+            )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
