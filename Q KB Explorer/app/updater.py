@@ -359,31 +359,52 @@ def _legacy_apply(project_dir: str, latest_sha: str, info: dict, t0: float) -> d
 
 
 def _restart_gunicorn():
-    """Restart Gunicorn workers to load new code.
+    """Exit the gunicorn master so docker reloads the container with
+    new code from disk.
 
-    SIGHUP alone doesn't work reliably when the initial import failed
-    (cached import error in worker). Instead:
-    1. Send SIGUSR2 to spawn a new master process
-    2. Then SIGTERM old workers so fresh ones load the new code
+    Why kill the master instead of just the workers: gunicorn runs with
+    --preload (legacy entrypoint), which imports the app once in the
+    master before forking workers. Workers fork via copy-on-write and
+    inherit the imported code from the master's memory. Killing workers
+    alone causes the master to respawn fresh workers — which still
+    inherit the OLD code from master's memory, regardless of what's on
+    disk now. The only way to reload the actual app code is to restart
+    the master itself.
 
-    If that fails, fall back to SIGHUP which at least tries a graceful reload.
+    The container has `restart: unless-stopped` in compose, so when the
+    master exits the container is brought back up with a fresh
+    entrypoint + fresh import. New entrypoints (post v2.2.0) drop
+    --preload so future per-worker reloads also work.
+
+    The signal is sent from a background thread with a short delay so
+    the HTTP response from /api/update/apply has time to flush.
     """
-    try:
-        # Kill all worker processes (not PID 1 master) — forces fresh spawn
-        import subprocess
-        result = subprocess.run(
-            ["python3", "-c",
-             "import os,signal; "
-             "[os.kill(int(p), signal.SIGTERM) "
-             "for p in os.listdir('/proc') "
-             "if p.isdigit() and int(p) != 1 and int(p) != os.getpid()]"],
-            capture_output=True, text=True, timeout=5,
-        )
-        logger.info("[Updater] Worker processes terminated — master will respawn them")
-    except Exception as e:
-        # Fallback: SIGHUP
-        logger.warning("[Updater] Worker kill failed (%s), trying SIGHUP", e)
+    import threading
+
+    def _delayed_kill():
+        time.sleep(2)
         try:
-            os.kill(1, signal.SIGHUP)
-        except Exception:
-            pass
+            os.kill(1, signal.SIGTERM)
+            logger.info(
+                "[Updater] SIGTERM sent to master (PID 1) — "
+                "docker will restart container with new code"
+            )
+        except Exception as e:
+            logger.error(
+                "[Updater] SIGTERM to master failed (%s); "
+                "falling back to worker-only kill (may not pick up new "
+                "code under --preload)", e,
+            )
+            try:
+                subprocess.run(
+                    ["python3", "-c",
+                     "import os,signal; "
+                     "[os.kill(int(p), signal.SIGTERM) "
+                     "for p in os.listdir('/proc') "
+                     "if p.isdigit() and int(p) != 1 and int(p) != os.getpid()]"],
+                    capture_output=True, text=True, timeout=5,
+                )
+            except Exception:
+                pass
+
+    threading.Thread(target=_delayed_kill, daemon=True).start()

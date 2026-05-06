@@ -47,7 +47,12 @@ if [ -f /app/requirements.txt ]; then
     fi
 fi
 
-GUNICORN_ARGS="--bind ${BIND}:${PORT} --workers ${WORKERS} --timeout 120 --preload app.main:app"
+# --preload is intentionally OFF: with --preload the master imports the
+# app once and forks workers via copy-on-write, so in-app auto-updates
+# can't pick up new code on disk by just respawning workers (they
+# inherit the cached import from master). Without --preload, each
+# worker imports independently and respawning a worker re-reads disk.
+GUNICORN_ARGS="--bind ${BIND}:${PORT} --workers ${WORKERS} --timeout 120 app.main:app"
 
 if [ -f "$CERT" ] && [ -f "$KEY" ]; then
     echo "[QKBE] TLS enabled — cert: $CERT  key: $KEY"

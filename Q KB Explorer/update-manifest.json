@@ -1,7 +1,7 @@
 {
-  "version": "2.1.0",
+  "version": "2.2.0",
   "min_updater_version": 1,
-  "notes": "v2.1.0 — Threat Intel, Tag Overhaul, PM Linux Fix. Requires pydantic + spectree.",
+  "notes": "v2.2.0 — Sync robustness: CVSS attribute unwrap, CORRELATION shape variations, init_db crashloop fix, per-record errors no longer abort the whole sync. UX: Settings welcome tip on fresh install, Save Credential gated on a successful Test Connection, credential picker re-renders on delete. Updater: master process now restarts on apply (was silently no-op under --preload).",
   "steps": [
     {
       "action": "copy_file",
