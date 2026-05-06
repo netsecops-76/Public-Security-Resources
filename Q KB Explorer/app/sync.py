@@ -1432,19 +1432,23 @@ class SyncEngine:
             plat_pages = 0
             search_after = ""
             url_path = f"/pm/v2/patches?platform={platform}&pageSize={self.PM_PAGE_SIZE}"
-            # QQL query: Windows uses isSuperseded:false; Linux patches
-            # have isSuperseded=null (the field doesn't apply to Linux's
-            # package-based model), so we skip that filter for Linux.
-            if platform == "Windows":
-                qql = "isSuperseded:false"
-                if not full and watermark:
-                    qql += f' and lastModified:>"{watermark}"'
+            # QQL query: Windows uses isSuperseded:false (Linux patches
+            # have isSuperseded=null and the field doesn't apply to
+            # their package-based model). For delta, also filter by
+            # modifiedDate. Note the QQL syntax: the field is
+            # `modifiedDate` (NOT `lastModified` — that token doesn't
+            # exist) and date comparisons use bare `>` not `:>`.
+            base_qql = "isSuperseded:false" if platform == "Windows" else ""
+            delta_qql = (f'modifiedDate>"{watermark}"'
+                         if (not full and watermark) else "")
+            if base_qql and delta_qql:
+                qql = base_qql + " and " + delta_qql
             else:
-                # Linux: no supersession filter. For delta, filter by lastModified.
-                qql = ""
-                if not full and watermark:
-                    qql = f'lastModified:>"{watermark}"'
+                qql = base_qql or delta_qql
             body = {"query": qql} if qql else {}
+            # Track whether we've already retried this platform without
+            # the delta filter as a fallback for QQL 400 errors.
+            delta_retry_done = False
 
             if self.sync_log:
                 self.sync_log.event("PM_PLATFORM_START", {
@@ -1466,13 +1470,38 @@ class SyncEngine:
                 )
 
                 if result.get("error"):
-                    msg = f"PM {platform} page {plat_pages}: {result.get('message', 'unknown error')}"
+                    err_msg = str(result.get("message", "unknown error"))
+                    # Graceful fallback: if Qualys rejects the QQL on the
+                    # very first page of a delta and we haven't retried
+                    # yet, drop the modifiedDate predicate and re-issue.
+                    # Better to ingest the full list (upserts are
+                    # idempotent) than abort the sync. Only retry once
+                    # per platform.
+                    is_qql_error = (
+                        ("Invalid QQL" in err_msg or "errorCode\":\"2119" in err_msg)
+                        and not full
+                        and not delta_retry_done
+                        and plat_pages == 1
+                    )
+                    if is_qql_error:
+                        delta_retry_done = True
+                        body = {"query": base_qql} if base_qql else {}
+                        if self.sync_log:
+                            self.sync_log.event("PM_QQL_FALLBACK", {
+                                "platform": platform,
+                                "reason": "delta QQL rejected — retrying without modifiedDate filter",
+                                "original_error": err_msg[:200],
+                            })
+                        plat_pages -= 1
+                        grand_pages -= 1
+                        continue
+                    msg = f"PM {platform} page {plat_pages}: {err_msg}"
                     all_errors.append(msg)
                     if self.sync_log:
                         self.sync_log.event("PAGE_ERROR", {
                             "platform": platform,
                             "page": plat_pages,
-                            "error": str(result.get("message"))[:500],
+                            "error": err_msg[:500],
                         })
                     break
 
