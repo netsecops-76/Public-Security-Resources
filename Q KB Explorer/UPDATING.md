@@ -1,133 +1,86 @@
 # Updating Q KB Explorer
 
-## Important Notice
+## If your in-app update didn't actually take effect
 
-We apologize for the inconvenience — the previous in-app update mechanism had issues that could leave the application in a partially broken state after updating. **Your data was never at risk.** All synced QIDs, CIDs, policies, tags, PM patches, credentials, and schedules are stored on a Docker volume that is completely separate from the application code. No update — successful or failed — touches your data.
+**Symptoms:** you clicked **Apply Update**, the UI returned a success message, but the app still behaves like the previous version — bugs that were supposedly fixed are still happening, or new features aren't visible. The version string in Settings may have advanced, but the running behavior didn't.
 
-If you ran the in-app updater and experienced issues (missing pages, 404 errors, "permission denied" on restart, or partially loaded features), follow the recovery steps below to restore full operation.
+This was a real bug in the updater shipped with v2.1.0, and it's fixed in v2.2.0. Short version: gunicorn was started with `--preload`, which makes the master process import the app once and fork workers from that imported copy. The updater killed and respawned workers — but the master still held the old code in memory, so respawned workers re-inherited it. Files on disk got replaced; the running app didn't.
 
----
+**Your data was never at risk.** All synced QIDs, CIDs, policies, tags, PM patches, credentials, schedules, and saved searches live on Docker volumes completely separate from the application code. Nothing about this bug touches the data volumes — successful or not.
 
-## Recovery: If You Ran the Old Updater and Things Broke
+### Recovery (one-time)
 
-Your data is safe. Run these two commands to rebuild the app with the latest code:
-
-```bash
-docker compose build --no-cache
-docker compose up -d
-```
-
-That's it. The container rebuilds from scratch with the current version, your data volume reconnects, and everything works.
-
----
-
-## How Updates Work Now (v2.1.0+)
-
-We've completely rebuilt the update mechanism to prevent these issues going forward. The new system is **manifest-driven** — each release ships with an `update-manifest.json` that tells the updater exactly what to do.
-
-### What Changed
-
-| Before (old updater) | After (manifest-driven) |
-|---------------------|------------------------|
-| Hardcoded logic that couldn't adapt to new requirements | Manifest from the NEW version controls the update |
-| Dependencies installed AFTER code was replaced (caused import errors) | Dependencies installed BEFORE code is replaced |
-| SIGHUP reload kept cached failed imports | Workers killed and respawned fresh |
-| entrypoint.sh copied without execute permission | Explicit `chmod +x` step in manifest |
-| No verification — update assumed success | App import verified, self-heal if broken |
-
-### The Manifest
-
-Each release includes `update-manifest.json` that defines the exact update steps:
-
-```json
-{
-  "version": "2.1.0",
-  "steps": [
-    {"action": "copy_file", "src": "requirements.txt", "dst": "requirements.txt"},
-    {"action": "pip_install", "args": "-r requirements.txt"},
-    {"action": "copy_dir", "src": "app", "dst": "app"},
-    {"action": "copy_file", "src": "entrypoint.sh", "dst": "entrypoint.sh"},
-    {"action": "run_command", "cmd": "chmod +x /app/entrypoint.sh"},
-    {"action": "copy_file", "src": "update-manifest.json", "dst": "update-manifest.json"},
-    {"action": "restart"}
-  ]
-}
-```
-
-This means:
-- **New dependencies are always installed first** — the app never loads without its requirements
-- **Docker-only files (Dockerfile, docker-compose.yml) are never touched** — your container config stays stable
-- **The entrypoint gets updated with self-heal logic** — if anything goes wrong on the next restart, it auto-installs missing packages
-- **Future releases can add custom steps** — database migrations, config changes, cleanup tasks — without changing the updater code
-
-### Self-Healing Startup
-
-The entrypoint now includes a pre-flight check:
+The bug is in the *running* code, so the in-app updater cannot fix itself. Run this once on the host where the container lives:
 
 ```bash
-python3 -c "from app.main import app" 2>/dev/null
-if [ $? -ne 0 ]; then
-    echo "[QKBE] App import failed — installing dependencies..."
-    pip install --no-cache-dir -r /app/requirements.txt
-fi
-```
-
-If the app fails to load (missing packages, broken imports), it automatically installs dependencies before starting Gunicorn. This catches edge cases that the update itself might miss.
-
----
-
-## One-Time Setup (First Time on v2.1.0)
-
-If you're coming from an older version (pre-v2.1.0), you need ONE container rebuild to get the new update infrastructure:
-
-```bash
-# Pull the latest code and rebuild
-cd "Q KB Explorer"
+cd "Q KB Explorer"             # the directory containing docker-compose.yml
 git pull origin Q-KB-Explorer
+docker compose down
 docker compose build --no-cache
 docker compose up -d
 ```
 
-After this single rebuild, all future updates work through the Settings → Update UI without ever needing to rebuild again.
+After this rebuild you'll be on v2.2.0 or later. From that point forward, every in-app update lands cleanly and you do not need to rebuild again.
+
+If `git pull` is unavailable on the host (you don't have a local checkout), download the latest tarball directly from the public branch and unpack it over your existing directory before the `docker compose` commands.
 
 ---
 
-## Using the In-App Updater
+## How updates work in v2.2.0+
 
-1. Open **Settings** tab
-2. Scroll to **Application Updates**
-3. Click **Check for Updates**
-4. If an update is available, click **Apply Update**
-5. The app restarts automatically — refresh your browser
+When you click **Apply Update**:
 
-The update typically completes in 2–5 seconds.
+1. The app checks GitHub (`netsecops-76/Public-Security-Resources`, branch `Q-KB-Explorer`) for a newer commit SHA than the one currently deployed.
+2. If newer, it downloads the source tarball and reads `update-manifest.json` from it. The manifest controls what the updater does — install dependencies, copy code, fix permissions, and restart.
+3. Files are copied into `/app` inside the container.
+4. The new commit SHA is recorded.
+5. The gunicorn master process exits cleanly (after a 2-second delay so the apply response can flush to your browser).
+6. Docker's `restart: unless-stopped` policy brings the container back up. The new entrypoint runs and the new code is imported fresh on the way up.
 
----
+Total downtime is roughly 5–10 seconds. Refresh your browser once the version string in Settings advances.
 
-## When to Rebuild vs. When to Use In-App Update
-
-| Scenario | Action |
-|----------|--------|
-| Regular updates (new features, bug fixes) | **In-app updater** — Settings → Apply Update |
-| First time setting up Q KB Explorer | `docker compose build && docker compose up -d` |
-| Coming from a version before v2.1.0 | **One-time rebuild** (see above), then in-app updates work |
-| Something went wrong after an update | `docker compose build --no-cache && docker compose up -d` |
-| Changing Docker configuration (ports, volumes, TLS) | Edit `docker-compose.yml` then rebuild |
+The manifest version (currently `2.2.0`) is a human-readable label shown in release notes and the updater response. The "is an update available" check is based on the GitHub commit SHA, not the manifest version — so any commit pushed to the public branch produces an update offer.
 
 ---
 
-## Your Data is Always Safe
+## Why pre-2.2.0 updates silently failed
 
-The application code (`/app/`) and your data (`/data/`) live in completely separate locations:
+In case you want to know what was actually wrong:
 
-- **Code**: Baked into the Docker image at build time, replaced during in-app updates
-- **Data**: On a named Docker volume (`qkbe-data`) that persists across builds, updates, and container restarts
+- gunicorn was started with `--preload app.main:app`, which is normally a memory-saving optimization. Under `--preload`, the master imports the app once and then forks workers; workers share the imported pages via copy-on-write.
+- The updater's restart logic killed every worker process but explicitly spared PID 1 (the master). When the worker pool dropped, the master respawned new workers — by forking itself again. The new workers inherited the master's already-imported (old) app, regardless of what was now on disk.
+- Result: file copy succeeded, version SHA advanced, "success" returned to the UI, and the running code was unchanged.
 
-No update process — whether successful, failed, or interrupted — can corrupt or delete your:
-- Synced QIDs, CIDs, policies, mandates, tags, PM patches
-- Saved credentials and vault encryption key
-- Sync schedules and history
-- Tag exports, migration reports, audit results
-- Intelligence saved searches
+v2.2.0 fixes this in two layers:
 
-Even if you completely delete and rebuild the container, your data reconnects automatically on the next start.
+- The updater now signals the gunicorn master (PID 1) directly with SIGTERM. Docker's restart policy brings the container back up, the entrypoint runs fresh, and the new code is imported cleanly. If signalling the master fails for any reason, the updater falls back to the previous worker-only kill so the update is still attempted.
+- The entrypoint drops `--preload`. Even if a future code path forgets to restart the master, per-worker respawns now re-read disk on their own.
+
+---
+
+## When to use which path
+
+| Situation | What to do |
+|-----------|------------|
+| You're on v2.2.0+ and there's a new release | **Settings → Apply Update** |
+| You're on pre-v2.2.0 (in-app updates aren't taking effect) | **One-time rebuild** — see Recovery above |
+| First-time install | `docker compose build && docker compose up -d` |
+| You changed `docker-compose.yml` (ports, volumes, TLS) | `docker compose up -d --build` |
+| Something looks wrong after any update | `docker compose down && docker compose build --no-cache && docker compose up -d` |
+
+---
+
+## Your data is on separate volumes
+
+Application code lives inside the image and the container's writable layer:
+
+- `/app/` — replaced on rebuild; modified by in-app updates.
+
+User data lives on named Docker volumes:
+
+- `/keys` (volume `qkbe-keys`) — AES-256 vault encryption key.
+- `/data` (volume `qkbe-data`) — encrypted credential vault, SQLite database, sync schedules and history.
+
+No update path — successful, failed, or interrupted — touches the volumes. You can run `docker compose down`, `docker compose build --no-cache`, and `docker compose up -d` as many times as you want; the next start reconnects to the same data automatically.
+
+If you ever want to wipe and start over (this *will* delete your data), use `docker compose down -v` to remove the volumes as well.
