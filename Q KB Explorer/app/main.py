@@ -331,6 +331,7 @@ def credentials_save():
     platform = data.get("platform", "")
     api_version = data.get("api_version", "v5")
     display_name = data.get("display_name", "").strip()
+    max_age = data.get("max_age")
     if not username or not password:
         return jsonify({"error": "Username and password required"}), 400
     # Validate credentials can be used with Qualys Basic Auth (latin-1)
@@ -342,7 +343,22 @@ def credentials_save():
     try:
         result = save_credential(username, password, platform, api_version,
                                   display_name=display_name)
-        return jsonify(result)
+        # Mint a vault-unlock session right here. The user just proved
+        # they know the password by typing it into the Save form, so
+        # forcing them through /api/credentials/verify on their very
+        # next API call (e.g. clicking Full Sync) is redundant and bad
+        # UX — it pops the re-auth modal seconds after a successful
+        # save, asking for the same password they just entered.
+        token = secrets.token_urlsafe(32)
+        _active_sessions[token] = True
+        resp = jsonify(result)
+        resp.set_cookie(
+            VAULT_AUTH_COOKIE, token,
+            httponly=True, secure=_COOKIE_SECURE,
+            samesite="Strict", path="/",
+            max_age=int(max_age) if max_age else None,
+        )
+        return resp
     except Exception as e:
         logger.exception("Failed to save credential")
         return jsonify({"error": "Internal server error"}), 500

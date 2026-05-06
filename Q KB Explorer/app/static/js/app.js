@@ -1253,11 +1253,23 @@ async function saveCredential() {
         _updateSaveButtonState();
         return;
     }
+    // Pass session timeout so the cookie set by the save endpoint
+    // matches the user's chosen idle window (same logic as verifyVaultAuth).
+    let maxAge = null;
+    const saved = localStorage.getItem("qkbe_settings");
+    if (saved) {
+        try {
+            const st = JSON.parse(saved);
+            if (st.sessionTimeout && st.sessionTimeout.enabled) {
+                maxAge = st.sessionTimeout.minutes * 60;
+            }
+        } catch (e) { /* ignore */ }
+    }
     try {
         const resp = await apiFetch("/api/credentials", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ username, password, platform, api_version: apiVersionPref, display_name }),
+            body: JSON.stringify({ username, password, platform, api_version: apiVersionPref, display_name, max_age: maxAge }),
         });
         const result = await resp.json();
         if (result.error) { showToast(result.error, "error"); return; }
@@ -1265,6 +1277,10 @@ async function saveCredential() {
         // Mask the password field — server decrypts via credential_id from now on
         pwField.value = VAULT_MASKED;
         pwField.setAttribute("data-vault-masked", "true");
+        // Mark vault as unlocked locally — the save endpoint already set the
+        // HttpOnly cookie. Without this, shouldShowVaultAuth() would re-prompt
+        // the user for the password they just typed seconds ago.
+        markVaultAuthenticated();
         saveSettings();
         setConnected(true);
         showToast("Credential saved securely", "success");
