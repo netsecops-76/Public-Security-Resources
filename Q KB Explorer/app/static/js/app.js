@@ -5,6 +5,11 @@ let platforms = {};
 let activeCredentialId = null;
 let apiVersionPref = "v5";
 let _savedCredentialCount = 0;
+// Snapshot of {username, password, platform} for which testConnection
+// last returned success. Cleared when any of those three change. Save
+// is gated on this matching the current form to prevent saving creds
+// that weren't actually verified against Qualys.
+let _lastTestPassed = null;
 const VAULT_MASKED = "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022"; // ••••••••
 let _sessionTimeoutInterval = null;
 
@@ -675,19 +680,25 @@ async function initApp() {
                 this.value = "";
                 this.removeAttribute("data-vault-masked");
                 activeCredentialId = null;
+                _invalidateTestResult();
             }
         });
         pwField.addEventListener("input", function() {
             this.removeAttribute("data-vault-masked");
             activeCredentialId = null;
+            _invalidateTestResult();
         });
     }
     const userField = document.getElementById("username");
     if (userField) {
         userField.addEventListener("input", function() {
             activeCredentialId = null;
+            _invalidateTestResult();
         });
     }
+    // Initial state — disable Save until a successful test or a vault
+    // credential is loaded.
+    _updateSaveButtonState();
 
     // Restore tab on refresh; on a fresh install (no saved credentials)
     // land on Settings so the user is pointed straight at the welcome tip.
@@ -833,6 +844,11 @@ function onPlatformChange() {
         document.getElementById("baseUrl").value = plat.api;
         document.getElementById("gatewayUrl").value = plat.gateway || "";
     }
+    // Changing platform changes the auth target, so any prior test result
+    // no longer applies. loadCredential() also calls this when restoring a
+    // saved credential — that's fine, the masked-password branch in
+    // _updateSaveButtonState keeps Save enabled in that case.
+    _invalidateTestResult();
 }
 
 // ─── Tab Switching ──────────────────────────────────────────────────────
@@ -1157,6 +1173,41 @@ function formatCredLabelMasked(cred) {
     return pod + " - " + user;
 }
 
+function _credSnapshot() {
+    return {
+        username: (document.getElementById("username").value || "").trim(),
+        password: document.getElementById("password").value || "",
+        platform: document.getElementById("platformSelect").value || "",
+    };
+}
+
+function _credsMatchLastTest() {
+    if (!_lastTestPassed) return false;
+    const cur = _credSnapshot();
+    return cur.username === _lastTestPassed.username
+        && cur.password === _lastTestPassed.password
+        && cur.platform === _lastTestPassed.platform;
+}
+
+function _invalidateTestResult() {
+    _lastTestPassed = null;
+    setConnected(false);
+    _updateSaveButtonState();
+}
+
+function _updateSaveButtonState() {
+    const btn = document.querySelector('button[onclick="saveCredential()"]');
+    if (!btn) return;
+    const pwField = document.getElementById("password");
+    const isMasked = pwField && pwField.getAttribute("data-vault-masked") === "true";
+    // Allow save if (a) editing an existing vaulted credential (masked
+    // password — server already verified it), or (b) a successful test
+    // exists for the exact values currently in the form.
+    const allow = isMasked || _credsMatchLastTest();
+    btn.disabled = !allow;
+    btn.title = allow ? "" : "Test Connection must succeed for the current values before saving";
+}
+
 async function saveCredential() {
     const username = document.getElementById("username").value.trim();
     const pwField = document.getElementById("password");
@@ -1193,6 +1244,15 @@ async function saveCredential() {
         showToast("Username and password required", "error");
         return;
     }
+    // New-credential path: require a successful Test Connection against
+    // the exact values currently in the form. Without this, a typo in
+    // the username (or any other field) gets persisted to the vault and
+    // every subsequent sync fails with confusing Qualys errors.
+    if (!_credsMatchLastTest()) {
+        showToast("Run Test Connection and have it succeed before saving", "error");
+        _updateSaveButtonState();
+        return;
+    }
     try {
         const resp = await apiFetch("/api/credentials", {
             method: "POST",
@@ -1209,6 +1269,7 @@ async function saveCredential() {
         setConnected(true);
         showToast("Credential saved securely", "success");
         syncVaultFromServer();
+        _updateSaveButtonState();
     } catch (e) {
         showToast("Failed to save credential: " + e.message, "error");
     }
@@ -1302,6 +1363,7 @@ function clearCredentials() {
     document.getElementById("credDisplayName").value = "";
     activeCredentialId = null;
     setConnected(false);
+    _invalidateTestResult();
     saveSettings();
     showToast("Credentials cleared", "info");
 }
@@ -1399,6 +1461,7 @@ function disconnectAll() {
     document.getElementById("password").value = "";
     document.getElementById("password").removeAttribute("data-vault-masked");
     document.getElementById("credDisplayName").value = "";
+    _invalidateTestResult();
     saveSettings();
     showToast("Disconnected", "info");
 }
@@ -1439,15 +1502,21 @@ async function testConnection() {
         const result = await resp.json();
         if (result.success) {
             setConnected(true);
+            // Capture the exact form state that was just verified, so save
+            // can later confirm the user didn't edit anything after testing.
+            _lastTestPassed = _credSnapshot();
             showToast(result.message || "Connection successful", "success");
         } else {
             setConnected(false);
+            _lastTestPassed = null;
             showToast(result.error || "Connection failed", "error");
         }
     } catch (e) {
+        _lastTestPassed = null;
         showToast("Connection test failed: " + e.message, "error");
     } finally {
         hideLoading();
+        _updateSaveButtonState();
     }
 }
 
