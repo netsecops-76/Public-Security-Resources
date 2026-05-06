@@ -1153,6 +1153,24 @@
 <!-- ─── Toast Container ─── -->
 <div id="toastContainer" class="toast-container"></div>
 
+<!-- ─── Update In-Progress Modal (auto-shown during /api/update/apply) ─── -->
+<div id="updateProgressModal" class="modal-overlay" style="display:none;">
+    <div class="modal-box update-progress-box">
+        <div class="modal-header">
+            <h2>Updating Q KB Explorer</h2>
+        </div>
+        <div class="update-progress-body">
+            <div class="loader-ring update-progress-ring"></div>
+            <div id="updateProgressPhase" class="update-progress-phase">Starting update…</div>
+            <div id="updateProgressDetail" class="update-progress-detail"></div>
+            <div id="updateProgressFallback" class="update-progress-fallback" style="display:none;">
+                <p>This is taking longer than expected. The server may still be restarting.</p>
+                <button class="btn-primary" onclick="window.location.reload()">Refresh now</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- ─── Vault Auth Challenge Modal ─── -->
 <div id="vaultAuthModal" class="modal-overlay" style="display:none;">
     <div class="modal-box vault-auth-modal">

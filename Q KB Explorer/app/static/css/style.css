@@ -204,6 +204,36 @@ select { cursor: pointer; }
 /* ─── Empty State ─── */
 .empty-state { text-align: center; padding: 20px; color: var(--text-2); font-size: 14px; }
 
+/* ─── Update Progress Modal ─── */
+.update-progress-body {
+    padding: 32px 24px;
+    text-align: center;
+}
+.update-progress-ring {
+    margin: 0 auto 20px;
+}
+.update-progress-phase {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-0);
+    margin-bottom: 6px;
+}
+.update-progress-detail {
+    font-size: 12px;
+    color: var(--text-2);
+    min-height: 18px;
+}
+.update-progress-fallback {
+    margin-top: 24px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border);
+}
+.update-progress-fallback p {
+    font-size: 13px;
+    color: var(--text-2);
+    margin: 0 0 12px;
+}
+
 /* ─── Welcome Tip (Settings tab, fresh install) ─── */
 .welcome-tip {
     background: var(--accent-dim);

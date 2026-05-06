@@ -1790,7 +1790,7 @@ async function applyUpdate() {
     const applyBtn = document.getElementById("updateApplyBtn");
     applyBtn.disabled = true;
     applyBtn.textContent = "Updating...";
-    statusEl.innerHTML = '<span style="opacity:0.7;">Downloading and applying update... This may take a minute.</span>';
+    _showUpdateProgress("Downloading and applying update…", "This may take a moment.");
 
     try {
         const resp = await apiFetch("/api/update/apply", {
@@ -1800,33 +1800,101 @@ async function applyUpdate() {
         });
         const data = await resp.json();
         if (data.status === "ok") {
-            statusEl.innerHTML = '<span style="color:var(--green);font-weight:600;">Update applied!</span>'
-                + '<br><span style="font-size:12px;">Version: ' + (data.version_short || "—")
-                + ' · ' + escapeHtml(data.message || "")
-                + '<br>Duration: ' + (data.duration_s || "—") + 's'
-                + '<br>The application is restarting. Refresh the page in a few seconds.</span>';
+            statusEl.innerHTML = '<span style="color:var(--green);font-weight:600;">Update applied — restarting…</span>';
             actionsEl.style.display = "none";
-            showToast("Update applied — waiting for server to restart...", "success");
-            // Wait for server to come back, then hard reload
-            const _waitForServer = async (attempt) => {
-                if (attempt > 10) { statusEl.innerHTML += '<br>Server is taking longer than expected. Please refresh manually.'; return; }
-                try {
-                    const h = await fetch("/api/health", { signal: AbortSignal.timeout(3000) });
-                    if (h.ok) { sessionStorage.removeItem("qkbe_active_tab"); window.location.reload(); return; }
-                } catch (_) {}
-                setTimeout(() => _waitForServer(attempt + 1), 2000);
-            };
-            setTimeout(() => _waitForServer(1), 3000);
+            // The server has scheduled a SIGTERM to its master process (~2s
+            // delay so this response can flush). Docker will respawn the
+            // container with the new code. Watch the down→up transition
+            // and reload as soon as the new server is reachable.
+            _waitForServerRestartAndReload(data.version_short);
         } else {
+            _hideUpdateProgress();
             statusEl.innerHTML = '<span style="color:var(--red,#d32f2f);font-weight:600;">Update failed</span>'
                 + '<br><span style="font-size:12px;">' + escapeHtml(data.error || "Unknown error") + '</span>';
             showToast("Update failed: " + (data.error || "Unknown"), "error");
+            applyBtn.disabled = false;
+            applyBtn.textContent = "Update Now";
         }
     } catch (e) {
+        _hideUpdateProgress();
         statusEl.innerHTML = '<span style="color:var(--red,#d32f2f);">Update failed: ' + escapeHtml(e.message) + '</span>';
+        applyBtn.disabled = false;
+        applyBtn.textContent = "Update Now";
     }
-    applyBtn.disabled = false;
-    applyBtn.textContent = "Update Now";
+}
+
+function _showUpdateProgress(phase, detail) {
+    const m = document.getElementById("updateProgressModal");
+    if (!m) return;
+    document.getElementById("updateProgressPhase").textContent = phase || "";
+    document.getElementById("updateProgressDetail").textContent = detail || "";
+    document.getElementById("updateProgressFallback").style.display = "none";
+    m.style.display = "flex";
+}
+
+function _hideUpdateProgress() {
+    const m = document.getElementById("updateProgressModal");
+    if (m) m.style.display = "none";
+}
+
+async function _waitForServerRestartAndReload(newVersionShort) {
+    // Two-phase poll: first wait for the server to actually go down
+    // (proves the restart kicked off), then wait for it to come back.
+    // Reloading on the first successful response without seeing a down
+    // would race the server's own SIGTERM and land the user back on
+    // the OLD code briefly before the restart happens.
+    const POLL_INTERVAL_MS = 1500;
+    const MAX_DURATION_MS = 90000;
+    const FORCE_RELOAD_IF_NO_DOWN_MS = 30000;
+    const started = Date.now();
+    let seenDown = false;
+
+    _showUpdateProgress(
+        "Restarting services…",
+        newVersionShort ? ("New version: " + newVersionShort) : "",
+    );
+
+    const _check = async () => {
+        const elapsed = Date.now() - started;
+        try {
+            const h = await fetch("/api/health", { signal: AbortSignal.timeout(2500) });
+            if (h.ok) {
+                if (seenDown) {
+                    // Server went down and has come back — we're on new code.
+                    sessionStorage.removeItem("qkbe_active_tab");
+                    window.location.reload();
+                    return;
+                }
+                if (elapsed > FORCE_RELOAD_IF_NO_DOWN_MS) {
+                    // Container restarted faster than our poll cadence.
+                    // After 30s of "always up" responses, give up
+                    // detecting the transition and just reload.
+                    sessionStorage.removeItem("qkbe_active_tab");
+                    window.location.reload();
+                    return;
+                }
+            }
+        } catch (_) {
+            // fetch failed — server is down or unreachable. This is the
+            // signal that the restart actually happened.
+            if (!seenDown) {
+                seenDown = true;
+                _showUpdateProgress(
+                    "Waiting for app to come back online…",
+                    newVersionShort ? ("New version: " + newVersionShort) : "",
+                );
+            }
+        }
+        if (elapsed > MAX_DURATION_MS) {
+            // Give the user manual control as a fallback.
+            document.getElementById("updateProgressPhase").textContent = "Still waiting…";
+            document.getElementById("updateProgressDetail").textContent = "";
+            document.getElementById("updateProgressFallback").style.display = "block";
+            return;
+        }
+        setTimeout(_check, POLL_INTERVAL_MS);
+    };
+    setTimeout(_check, 1000);
 }
 
 // ── Auto-Update Schedule ─────────────────────────────────────────────────
