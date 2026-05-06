@@ -1,200 +1,31 @@
 # Q KB Explorer — Architecture
 
-> Last updated: 2026-03-24
+The maintained architecture document is [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). It covers the component map, technology stack with current versions, database schema (regular + FTS5 tables), security architecture, sync flow, and the deployment model.
 
-## System Overview
+This top-level file used to duplicate that content and drifted out of date (last meaningful update was March 2026, before Tags / PM Patches / Intelligence / Auto-Update scheduling all shipped). v2.3 retired the duplicate. Treat `docs/ARCHITECTURE.md` as the source of truth.
 
-Q KB Explorer is a local caching and exploration tool for the Qualys Knowledge Base. It syncs QIDs, CIDs, Policies, and Mandates from Qualys cloud APIs into a local SQLite database, enabling fast full-text search, cross-reference navigation, compliance mapping, and cross-environment policy migration — all through a single-page web UI.
+## Snapshot
 
-## Technology Stack
+A one-screen orientation. For depth, follow the links.
 
-| Component    | Technology               | Version  |
-|--------------|--------------------------|----------|
-| Backend      | Flask (Python)           | 3.1.3    |
-| Frontend     | Vanilla JavaScript       | ES6+     |
-| Charts       | Chart.js                 | bundled  |
-| Database     | SQLite (WAL + FTS5)      | built-in |
-| Encryption   | cryptography (AES-256-GCM) | 46.0.5 |
-| Scheduler    | APScheduler              | 3.10.4   |
-| HTTP Client  | requests + xmltodict     | 2.32.4   |
-| PDF Reports  | reportlab                | 4.4.0    |
-| HTML Sanitizer | bleach                 | 6.3.0    |
-| Rate Limiter | flask-limiter            | 4.1.1    |
-| WSGI Server  | Gunicorn                 | 23.0.0   |
-| Container    | Docker (python:3.12-slim)| 3.12     |
+- **Backend.** Flask + Gunicorn (single worker by default; `--preload` deliberately off so the in-app updater can reload code without rebuilding the container). SQLite with WAL mode and FTS5 indexes for full-text search.
+- **Frontend.** Vanilla JavaScript SPA, no build step. Chart.js for the Dashboard.
+- **Sync.** `app/sync.py` drives full and delta syncs across six data types (QIDs, CIDs, Policies, Mandates, Tags, PM Patches). Pre-count + populated-range targeting, batched per-page transactions, per-record error isolation, retry with backoff on 409/429, global mutex serializes concurrent syncs.
+- **Vault.** AES-256-GCM credential storage on a separate Docker volume from the SQLite data, both with restrictive (700/600) permissions. Vault unlock is an HttpOnly cookie minted by `POST /api/credentials/verify` (or by `POST /api/credentials` on first save).
+- **Scheduler.** APScheduler — recurring delta syncs per data type, weekly DB maintenance, weekly auto-update.
+- **Updater.** Manifest-driven in-app update from the public branch. Master process restarts on apply (gunicorn re-imports fresh code); UPDATING.md covers recovery for users on pre-2.2 images.
+- **API.** Documented at runtime via OpenAPI 3 at `/api/docs/swagger`, `/api/docs/redoc`, `/api/docs/scalar`, and `/api/docs/openapi.json`. ~95 paths.
 
-## Architecture Diagram
+## Diagram
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│                       Browser (SPA)                           │
-│  ┌──────┐ ┌──────┐ ┌──────┐ ┌────────┐ ┌────────┐ ┌──┐┌──┐ │
-│  │Dashbd│ │ QIDs │ │ CIDs │ │Policies│ │Mandates│ │⚙️││ ? │ │
-│  └──────┘ └──────┘ └──────┘ └────────┘ └────────┘ └──┘└──┘ │
-│   app.js (3,713 LOC) · Chart.js · style.css (1,155 LOC)     │
-└──────────────────────────┬───────────────────────────────────┘
-                           │ HTTP (JSON)
-┌──────────────────────────▼───────────────────────────────────┐
-│                 Flask Application (main.py)                    │
-│  ┌─────────────┐  ┌──────────┐  ┌───────────────────┐       │
-│  │ Auth Gate    │  │ 55 API   │  │ CSV/PDF Export    │       │
-│  │ (HttpOnly    │  │ Routes   │  │ (reportlab)       │       │
-│  │  cookies)   │  │ + CSRF   │  │                   │       │
-│  └─────────────┘  └──────────┘  └───────────────────┘       │
-└────────┬──────────────┬──────────────────┬───────────────────┘
-         │              │                  │
-┌────────▼────┐  ┌──────▼──────┐  ┌───────▼────────────┐
-│ Vault       │  │ Database    │  │ Sync Engine        │
-│ (vault.py)  │  │(database.py)│  │ (sync.py)          │
-│ AES-256-GCM │  │ 19 tables   │  │ full/delta modes   │
-│ /keys vol   │  │ 3 FTS5      │  │ ID-range chunking  │
-└─────────────┘  └──────┬──────┘  └───────┬────────────┘
-                        │                  │
-                 ┌──────▼──────┐  ┌───────▼────────────┐
-                 │ SQLite DB   │  │ Qualys API Client  │
-                 │ /data vol   │  │ (qualys_client.py) │
-                 │ WAL mode    │  │ 13 platform regions│
-                 └─────────────┘  │ XML → dict parsing │
-                                  └────────────────────┘
-                                           │
-                                  ┌────────▼────────────┐
-                                  │ Qualys Cloud APIs   │
-                                  │ /api/4.0/fo/        │
-                                  │ knowledge_base/vuln/│
-                                  │ compliance/control/ │
-                                  │ compliance/policy/  │
-                                  └─────────────────────┘
-```
+A more detailed component diagram, schema listing, and security model live in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Two related references:
 
-## Module Map
+- [`README.md`](README.md) — feature overview, deployment, the **Use as a Qualys API caching middleware** wiring guide.
+- [`API_REFERENCE.md`](API_REFERENCE.md) — entry-point pointer at the live OpenAPI spec; same canonical-source pattern this file follows.
 
-| Module            | Responsibility                                        | File               | LOC   |
-|-------------------|-------------------------------------------------------|---------------------|-------|
-| Routes            | HTTP endpoints, request validation, auth gate, CSRF   | app/main.py         | 1,908 |
-| Database          | Schema, CRUD, FTS5 search, filter queries, migrations | app/database.py     | 2,357 |
-| Sync Engine       | Full/delta sync, chunking, watermarks, progress       | app/sync.py         | 449   |
-| Sync Log          | Event-level sync diagnostics, SQLite persistence      | app/sync_log.py     | 380   |
-| Qualys Client     | HTTP client, XML parsing, platform registry           | app/qualys_client.py| 365   |
-| Scheduler         | APScheduler background jobs, syncs + maint + updates  | app/scheduler.py    | 579   |
-| Vault             | AES-256-GCM encryption, credential CRUD               | app/vault.py        | 255   |
-| Maintenance       | DB backup (gzip), VACUUM, ANALYZE, restore            | app/maintenance.py  | 183   |
-| Updater           | GitHub version check, tarball download, apply update   | app/updater.py      | 228   |
-| Frontend App      | SPA logic, shortcuts, bookmarks, search history       | app/static/js/app.js| 4,205 |
-| Styles            | Dark/light themes, cards, badges, layout              | app/static/css/style.css | 1,155 |
-| Template          | Single-page HTML with 7 tabs, modals, help content    | app/templates/index.html | 1,237 |
+## Operational notes
 
-## Data Flow
-
-### Sync Flow
-```
-User triggers sync → main.py route → sync.py engine
-  → qualys_client.py HTTP POST → Qualys API XML response
-  → xmltodict parsing → database.py upsert_vuln/upsert_control/etc.
-  → SQLite INSERT OR REPLACE → FTS5 index rebuild
-  → sync_log.py event recording → progress callback → SSE to browser
-```
-
-### Search Flow
-```
-User types query → app.js _qidSearchParams() → GET /api/qids?q=...
-  → main.py _parse_qid_filters() → database.py search_vulns()
-  → FTS5 MATCH + SQL WHERE conditions → paginated results
-  → JSON response → app.js renderQidResults() → DOM update
-```
-
-### Bulk Export Flow
-```
-User enters select mode → checkboxes appear on cards
-  → selects items → clicks Export CSV
-  → GET /api/qids/export-details?ids=1,2,3&format=csv
-  → main.py fetches full detail for each ID → CSV response
-  → browser downloads file
-```
-
-### Policy Migration Flow
-```
-Export: Policy detail → POST /api/policies/{id}/export
-  → qualys_client.py fetch full XML → database.py store export_xml
-  → GET /download-xml or POST /export-zip for download
-
-Import: POST /api/policies/upload → read stored XML
-  → qualys_client.py POST to destination Qualys environment
-  → response with new policy_id
-```
-
-## Database Schema
-
-### Core Data Tables
-| Table                    | Purpose                                    | Primary Key       |
-|--------------------------|--------------------------------------------|-------------------|
-| vulns                    | QID knowledge base entries (114K+)         | qid               |
-| controls                 | CID compliance controls (26K+)             | cid               |
-| policies                 | Qualys compliance policies                 | policy_id         |
-| mandates                 | Compliance frameworks/mandates             | mandate_id        |
-
-### Relationship Tables
-| Table                    | Links                                      | Key               |
-|--------------------------|--------------------------------------------|-------------------|
-| vuln_cves                | QID → CVE IDs                              | (qid, cve_id)     |
-| vuln_bugtraqs            | QID → Bugtraq IDs                          | (qid, bugtraq_id) |
-| vuln_vendor_refs         | QID → Vendor references                    | (qid, vendor_ref_id) |
-| vuln_rti                 | QID → Real-Time Threat Indicator tags      | (qid, rti_tag)    |
-| vuln_supported_modules   | QID → Supported scanner/agent modules      | (qid, module_name)|
-| control_technologies     | CID → Technology associations              | (cid, technology)  |
-| policy_controls          | Policy → CID linkage                       | (policy_id, cid)   |
-| mandate_controls         | Mandate → CID linkage                      | (mandate_id, cid)  |
-
-### Metadata Tables
-| Table                    | Purpose                                    |
-|--------------------------|--------------------------------------------|
-| sync_state               | Watermarks and last sync timestamps        |
-| sync_log_runs            | Sync execution history (20 per type)       |
-| sync_log_events          | Detailed sync event log                    |
-| sync_schedules           | Recurring sync schedule definitions        |
-| db_maintenance_config    | Weekly maintenance schedule and last run    |
-
-### FTS5 Virtual Tables
-| Table          | Indexes                              |
-|----------------|--------------------------------------|
-| vulns_fts      | qid, title, category, diagnosis      |
-| controls_fts   | cid, statement, category             |
-| mandates_fts   | mandate_id, title, description       |
-
-## Security Architecture
-
-```
-┌─────────────────────────────────┐
-│ Docker Container                │
-│                                 │
-│  /keys/ (700) ─── AES-256 key  │  ← Separate volume
-│  /data/ (700) ─── vault.json   │  ← Separate volume
-│                    qkbe.db      │
-│                                 │
-│  Auth Gate ────── HttpOnly cookie│
-│  CSRF ─────────── X-Requested-With│
-│  Rate Limit ───── 5/min verify  │
-│  Vault ────────── AES-256-GCM  │
-│  Passwords ────── compare_digest│
-│  Sanitization ─── bleach       │
-│  Optional TLS ── /app/certs/   │
-└─────────────────────────────────┘
-```
-
-- **Defense-in-depth:** Encryption key and encrypted data on separate Docker volumes
-- **Auth gate:** All API routes require HttpOnly vault unlock cookie (except credential management)
-- **CSRF protection:** `X-Requested-With: QKBE` header required on POST/PATCH/DELETE
-- **Rate limiting:** 5 requests/minute on `/api/credentials/verify`
-- **HTML sanitization:** bleach strips dangerous tags from QID content fields
-- **Password comparison:** `secrets.compare_digest()` prevents timing attacks
-- **TLS:** Auto-detected from `/app/certs/` directory (cert.pem + key.pem); sets `secure=True` on cookie
-
-## External Dependencies
-
-| Dependency     | Purpose                    | Risk Level | Notes                          |
-|----------------|----------------------------|------------|--------------------------------|
-| Qualys API     | Source of all KB/policy data| Medium     | Rate-limited (300 req/hr)      |
-| SQLite         | Local data store           | Low        | Built into Python, no server   |
-| Chart.js       | Dashboard visualizations   | Low        | Bundled, no CDN dependency     |
-| reportlab      | PDF report generation      | Low        | Pure Python, no system deps    |
-| bleach         | HTML sanitization          | Low        | Well-maintained, no native deps|
-| flask-limiter  | Rate limiting              | Low        | In-memory storage (single worker) |
+- **Container restart policy** is `unless-stopped` in `docker-compose.yml`; the in-app updater relies on this to reload after master SIGTERM.
+- **Persistent volumes:** `qkbe-keys` (vault encryption key) and `qkbe-data` (encrypted vault + SQLite). No update path touches these.
+- **Health check** at `/api/health` (no auth); polled by Docker every 30s.
+- **Cadence:** when the architecture genuinely shifts (new table, new module, signal-handling change), update [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) in the same commit. This top-level file does not need to be edited because it carries no canonical content of its own.
