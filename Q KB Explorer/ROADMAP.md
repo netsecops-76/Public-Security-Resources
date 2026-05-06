@@ -138,13 +138,33 @@
 
 ---
 
-## Planned (v2.2)
+## Completed (v2.2 — Sync Robustness, UX, Updater)
+
+What v2.2 actually shipped diverged from the original v2.2 plan; the
+items previously listed here have moved to v2.3.
 
 | # | Feature | Type | Status |
 |---|---------|------|--------|
-| 81 | PM Patch Catalog UI — dedicated browse/search tab for the 218K+ patch catalog with filters by platform, vendor, severity, security/non-security, and KB article. Direct patch-to-QID cross-navigation. | full-stack | Planned |
-| 82 | Tag migration improvements — inline rename editing in collision preflight, batch rename patterns, drag-and-drop parent reassignment, migration dry-run preview | full-stack | Planned |
-| 83 | QID solution text with structured vendor links — parse vendor fix URLs, advisory links, and KB articles from the solution/diagnosis HTML into clickable structured references for macOS, Unix, and other platforms not covered by the PM API | full-stack | Planned |
+| 81 | QID sync resilience: CVSS-with-attributes unwrap, CORRELATION shape variations, init_db crashloop fix, per-record errors no longer abort the whole sync (all six sync paths) | backend | Shipped |
+| 82 | PM Patches delta sync — correct QQL field name (`modifiedDate`) and operator (`>`); graceful one-shot fallback to full-list ingest if QQL is rejected | backend | Shipped |
+| 83 | Settings welcome tip on fresh install (auto-routes to Settings; auto-hides on first credential save) | frontend | Shipped |
+| 84 | Save Credential gated on a successful Test Connection — prevents typo'd credentials from landing in the vault | full-stack | Shipped |
+| 85 | Credential picker re-renders immediately after delete | frontend | Shipped |
+| 86 | Vault session minted on credential save — first sync after save no longer triggers the re-auth modal | full-stack | Shipped |
+| 87 | In-app updater no longer silently no-ops under gunicorn `--preload` (master-restart path + `--preload` removed from entrypoint) | backend, infra | Shipped |
+| 88 | Apply Update progress modal — phase-tracked spinner, auto-reload on server down→up transition, manual fallback at 90s | frontend | Shipped |
+| 89 | Automatic Updates schedule (`/api/update/schedule`) — APScheduler cron job runs `apply_update()` on a configured day/time; idempotent disable; ALTER TABLE migration on existing volumes | full-stack | Shipped |
+| 90 | UPDATING.md rewritten for users hit by the v2.1 silent-update bug; explicit recovery steps and explanation of the `--preload` pitfall | docs | Shipped |
+
+---
+
+## Planned (v2.3)
+
+| # | Feature | Type | Status |
+|---|---------|------|--------|
+| 91 | PM Patch Catalog UI — dedicated browse/search tab for the 218K+ patch catalog with filters by platform, vendor, severity, security/non-security, and KB article. Direct patch-to-QID cross-navigation. | full-stack | Planned |
+| 92 | Tag migration improvements — inline rename editing in collision preflight, batch rename patterns, drag-and-drop parent reassignment, migration dry-run preview | full-stack | Planned |
+| 93 | QID solution text with structured vendor links — parse vendor fix URLs, advisory links, and KB articles from the solution/diagnosis HTML into clickable structured references for macOS, Unix, and other platforms not covered by the PM API | full-stack | Planned |
 
 ---
 

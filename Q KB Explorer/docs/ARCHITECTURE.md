@@ -1,6 +1,6 @@
 # Q KB Explorer — Architecture
 
-> Last updated: 2026-05-03
+> Last updated: 2026-05-06
 
 ## System Overview
 
@@ -75,14 +75,14 @@ Q KB Explorer is a local caching and exploration tool for the Qualys Knowledge B
 | Sync Engine       | Pre-count + populated-range targeting, batched on_page transactions, verify | app/sync.py             | 1,561 |
 | Sync Log          | Event-level sync diagnostics, SQLite persistence, render-text helpers   | app/sync_log.py             | 380   |
 | Qualys Client     | v4 XML + QPS REST JSON + PM Gateway JWT; tag CRUD + evaluate            | app/qualys_client.py        | 1,048 |
-| Scheduler         | APScheduler recurring delta syncs (daily / 2x_week / 1x_week / 2x / 1x_month) | app/scheduler.py        | 579   |
+| Scheduler         | APScheduler — recurring delta syncs, weekly DB maintenance, weekly auto-update | app/scheduler.py        | 579   |
 | Vault             | AES-256-GCM encryption, credential CRUD                                  | app/vault.py                | 255   |
 | Tag Validation    | Pure-Python rule-type validators shared by client + server (Phase 3)     | app/tag_validation.py       | 325   |
 | Tag Audit         | Read-only inventory analysis with pre-check integration, clustered duplicate display, and explanatory pass/fail output | app/tag_audit.py            | 411   |
 | Library Seed      | 136 curated tag library entries (Qualys "Complete Tag List" by Colton Pepper); idempotent seed | app/library_seed.py         | 173   |
 | OpenAPI           | SpecTree instance + shared `Error` / `Pagination[T]` / `OkMessage` models | app/openapi.py             | 123   |
 | Maintenance       | DB backup (gzip), VACUUM, ANALYZE, restore                                | app/maintenance.py          | 183   |
-| Updater           | GitHub version check, tarball download, apply update                      | app/updater.py              | 228   |
+| Updater           | GitHub version check, tarball download, manifest-driven apply, master-restart on apply (`--preload` removed in v2.2 so worker respawns also reload) | app/updater.py              | 228   |
 | Frontend App      | SPA logic, shortcuts, bookmarks, tags CRUD/migration/library/audit UI     | app/static/js/app.js        | 6,234 |
 | Styles            | Dark/light themes, cards, badges, layout, severity colour cues            | app/static/css/style.css    | 1,511 |
 | Template          | Single-page HTML with 9 tabs (Dashboard, QIDs, CIDs, Policies, Mandates, Intelligence, Tags, Settings, Help) + modals | app/templates/index.html | 1,795 |
@@ -198,6 +198,7 @@ User selects tags on Browse tab → clicks "Migrate to env…"
 | sync_log_events          | Detailed sync event log                    |
 | sync_schedules           | Recurring sync schedule definitions        |
 | db_maintenance_config    | Weekly maintenance schedule and last run    |
+| auto_update_config       | Weekly auto-update schedule, last check, status, error, version |
 
 ### FTS5 Virtual Tables
 | Table          | Indexes                              |

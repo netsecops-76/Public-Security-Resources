@@ -1,7 +1,7 @@
 {
-  "version": "2.2.0",
+  "version": "2.3.0",
   "min_updater_version": 1,
-  "notes": "v2.2.0 — Sync robustness: CVSS attribute unwrap, CORRELATION shape variations, init_db crashloop fix, per-record errors no longer abort the whole sync. UX: Settings welcome tip on fresh install, Save Credential gated on a successful Test Connection, credential picker re-renders on delete. Updater: master process now restarts on apply (was silently no-op under --preload).",
+  "notes": "v2.3.0 — Automatic Updates schedule (configurable day/time, runs apply_update on cron). Apply Update progress modal with auto-reload on server down→up transition. Vault session minted on credential save (no re-auth modal after first save). PM Patches delta sync uses correct QQL (modifiedDate>); falls back to full-list ingest if QQL is rejected. Auto-update toggle no longer 404s. Includes the v2.2 sync robustness, UX, and updater-restart fixes.",
   "steps": [
     {
       "action": "copy_file",
