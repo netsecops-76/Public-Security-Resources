@@ -204,6 +204,22 @@ select { cursor: pointer; }
 /* ─── Empty State ─── */
 .empty-state { text-align: center; padding: 20px; color: var(--text-2); font-size: 14px; }
 
+/* ─── Welcome Tip (Settings tab, fresh install) ─── */
+.welcome-tip {
+    background: var(--accent-dim);
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-sm);
+    padding: 14px 18px;
+    margin-bottom: 16px;
+    color: var(--text-1);
+    font-size: 14px;
+    line-height: 1.5;
+}
+.welcome-tip-title { color: var(--accent); font-weight: 600; margin-bottom: 8px; font-size: 15px; }
+.welcome-tip-steps { margin: 0; padding-left: 22px; }
+.welcome-tip-steps li { margin: 4px 0; }
+.welcome-tip-foot { margin-top: 10px; color: var(--text-2); font-size: 12px; }
+
 /* ─── Loading ─── */
 .loading-overlay {
     position: fixed; inset: 0; background: rgba(10,12,16,0.8);

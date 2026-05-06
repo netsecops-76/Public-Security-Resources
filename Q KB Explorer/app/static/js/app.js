@@ -4,6 +4,7 @@
 let platforms = {};
 let activeCredentialId = null;
 let apiVersionPref = "v5";
+let _savedCredentialCount = 0;
 const VAULT_MASKED = "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022"; // ••••••••
 let _sessionTimeoutInterval = null;
 
@@ -688,10 +689,13 @@ async function initApp() {
         });
     }
 
-    // Restore tab on refresh, default to dashboard on fresh load
+    // Restore tab on refresh; on a fresh install (no saved credentials)
+    // land on Settings so the user is pointed straight at the welcome tip.
     const savedTab = sessionStorage.getItem("qkbe_active_tab");
     if (savedTab && document.getElementById("tab-" + savedTab)) {
         switchTab(savedTab);
+    } else if (_savedCredentialCount === 0) {
+        switchTab("settings");
     } else {
         loadDashboard();
     }
@@ -1119,8 +1123,11 @@ async function syncVaultFromServer() {
 }
 
 function updateCredentialCount(count) {
+    _savedCredentialCount = count;
     const el = document.getElementById("credVaultCount");
     el.textContent = count === 0 ? "No saved credentials" : count + " saved credential" + (count > 1 ? "s" : "");
+    const tip = document.getElementById("settingsWelcomeTip");
+    if (tip) tip.style.display = count === 0 ? "" : "none";
 }
 
 /**

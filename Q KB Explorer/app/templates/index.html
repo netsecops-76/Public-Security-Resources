@@ -839,6 +839,16 @@
 <!-- ════════════════════════════════════════════════════════════════════════ -->
 <div id="tab-settings" class="tab-content">
 
+    <!-- Welcome tip (shown only when no credentials are saved yet) -->
+    <div id="settingsWelcomeTip" class="welcome-tip" style="display:none;">
+        <div class="welcome-tip-title">Welcome — let's get you set up</div>
+        <ol class="welcome-tip-steps">
+            <li>Below, pick your <strong>Qualys Platform</strong> and enter your credentials, then click <strong>Save Settings &amp; Credential</strong> to store them in the encrypted vault.</li>
+            <li>Scroll down to <strong>Data Sync</strong> and run a <strong>Full Sync</strong> for each data type you want available — QIDs, CIDs, Policies, Tags, PM Patches. Sync only what you need; you can add more later.</li>
+        </ol>
+        <div class="welcome-tip-foot">This message will disappear once your first credential is saved.</div>
+    </div>
+
     <!-- Connection -->
     <div class="card">
         <div class="card-header"><h2>Connection</h2></div>
