@@ -239,6 +239,14 @@ def init_db():
         if "last_missing_count" not in sync_state_cols:
             conn.execute("ALTER TABLE sync_state ADD COLUMN last_missing_count INTEGER")
 
+        # auto_update_config — ensure last_version exists. Some volumes
+        # carry an earlier 9-column version of this table (without
+        # last_version) and CREATE TABLE IF NOT EXISTS would have skipped
+        # the new schema on those installs.
+        au_cols = {r[1] for r in conn.execute("PRAGMA table_info(auto_update_config)").fetchall()}
+        if au_cols and "last_version" not in au_cols:
+            conn.execute("ALTER TABLE auto_update_config ADD COLUMN last_version TEXT")
+
         # Migrate any pre-existing kb_universe rows into the generalized
         # sync_universe table so the QIDs row keeps its persisted
         # universe across the schema upgrade.

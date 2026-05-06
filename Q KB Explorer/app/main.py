@@ -1161,20 +1161,40 @@ def update_schedule_post():
     )
     data = request.json or {}
     enabled = bool(data.get("enabled"))
-    try:
-        day = int(data.get("day_of_week", 6))
-        hour = int(data.get("hour", 0))
-        minute = int(data.get("minute", 0))
-    except (TypeError, ValueError):
-        return jsonify({"error": "day_of_week, hour and minute must be integers"}), 400
-    if not (0 <= day <= 6 and 0 <= hour <= 23 and 0 <= minute <= 59):
-        return jsonify({"error": "day_of_week 0-6, hour 0-23, minute 0-59"}), 400
-    tz = (data.get("timezone") or "UTC").strip() or "UTC"
+
+    # Schedule fields. When disabling, these are irrelevant — accept
+    # whatever the client sent (or fall back to existing/defaults) so
+    # the user can always turn the feature off, even if the form values
+    # are missing or invalid. Only validate strictly when ENABLING.
+    existing = get_auto_update_config()
+
+    def _coerce_int(val, fallback):
+        try:
+            return int(val)
+        except (TypeError, ValueError):
+            return fallback
+
+    day = _coerce_int(data.get("day_of_week"), existing.get("day_of_week") or 6)
+    hour = _coerce_int(data.get("hour"), existing.get("hour") or 0)
+    minute = _coerce_int(data.get("minute"), existing.get("minute") or 0)
+    tz = (data.get("timezone") or existing.get("timezone") or "UTC").strip() or "UTC"
+
+    if enabled:
+        if not (0 <= day <= 6 and 0 <= hour <= 23 and 0 <= minute <= 59):
+            return jsonify({"error": "day_of_week 0-6, hour 0-23, minute 0-59"}), 400
+    else:
+        # Clamp to safe values so the persisted row is always sane even
+        # if the client sent garbage. Schedule isn't running anyway.
+        day = day if 0 <= day <= 6 else 6
+        hour = hour if 0 <= hour <= 23 else 0
+        minute = minute if 0 <= minute <= 59 else 0
 
     save_auto_update_config(enabled, day, hour, minute, tz)
     if enabled:
         schedule_auto_update(day, hour, minute, tz)
     else:
+        # Always remove on disable, even if no job is currently
+        # registered (e.g. fresh server, prior config was never on).
         remove_auto_update_schedule()
 
     cfg = get_auto_update_config()

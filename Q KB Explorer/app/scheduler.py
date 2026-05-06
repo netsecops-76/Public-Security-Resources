@@ -506,7 +506,17 @@ def _execute_auto_update():
     it returns when an update was actually applied; we record last_check
     BEFORE that fires so the result persists across the container
     restart.
+
+    Re-checks the config on entry so a job that was already triggered
+    when the user disabled auto-updates does not still apply an update.
     """
+    # Re-check enabled state at fire time. A misfire grace window or a
+    # disable-while-firing race must not slip through.
+    cfg = get_auto_update_config()
+    if not cfg or not cfg.get("enabled"):
+        logger.info("[Auto-Update] Job fired but config is disabled — skipping")
+        return
+
     from app.updater import apply_update
     logger.info("[Auto-Update] Scheduled update check starting...")
     try:
