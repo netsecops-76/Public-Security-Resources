@@ -29,6 +29,13 @@ _No changes pending release._
 
 ## [v2.2.0] — 2026-05-06 — Sync Robustness, UX, Updater Rewrite
 
+### Added
+- **Manifest-driven in-app updater**: each release ships an `update-manifest.json` that defines the apply steps (`copy_file`, `copy_dir`, `pip_install`, `run_command`, `restart`). The NEW version's manifest controls the update flow, so the old code running the update can adapt to whatever the new release needs without code changes to the updater itself. Replaces the prior hardcoded sequence that couldn't add/move steps without an updater rewrite.
+- **Self-healing legacy updater path**: after a copy, verifies the app loads via `python3 -c "from app.main import app"`. If import fails or fewer routes than expected register, reinstalls dependencies and re-verifies before declaring success.
+- **Self-healing entrypoint** (`entrypoint.sh`): on container start, runs the same import check; if it fails, runs `pip install --no-cache-dir -r requirements.txt` and retries before launching Gunicorn. Catches the case where a manifest update added a dependency the previous restart missed.
+- **`UPDATING.md`**: user guide covering how the manifest-driven updater works, what's safe across updates (data on volumes, never touched), and recovery commands for users coming from the older updater that left the app in a partial state. *(Rewritten in v2.3.0 to also cover the `--preload` silent-update bug.)*
+- **`README.md` Updating section** pointing to `UPDATING.md`.
+
 ### Fixed
 - **QID sync crash on CVSS scores with attributes** (Issue #4): Qualys returns CVSS BASE/TEMPORAL with a `source` attribute (e.g. `<BASE source="cve">5.0</BASE>`), which xmltodict parses to `{"@source": "cve", "#text": "5.0"}`. `float({...})` raised `float() argument must be a string or a real number, not 'dict'` and aborted the page's batch upsert. Added `_xml_text` helper that unwraps `#text` from a dict-shaped XML value and routed CVSS v2/v3 base + temporal reads through it.
 - **init_db crashloop on malformed correlation_json** (Issue #5): `_backfill_threat_columns` raised `'str' object has no attribute 'get'` on rows where `EXPLT_SRC` or `MW_SRC` was a bare string (xmltodict's collapsed text-only-element shape). The function ran on every gunicorn start, so a single malformed row kept the container in a permanent restart loop. Added isinstance guards inside both loops, and wrapped each row's processing in try/except so a malformed blob logs a WARNING and is skipped rather than aborting `init_db`.
@@ -50,6 +57,11 @@ _No changes pending release._
 - **System tag list is exact-name only**: no prefix pattern matching (e.g. `EASM*`) — prevents false positives on user-created tags.
 
 ### Fixed (other)
+- **Updater: tarball nesting**: the public-repo tarball nests the project under `Q KB Explorer/`. The updater now finds the manifest at either the tarball root or one level deeper instead of bailing.
+- **Updater: install order**: dependencies are installed **before** the `app/` directory is replaced. The previous order could leave new code on disk that imported a not-yet-installed package, breaking Gunicorn restart.
+- **Updater: entrypoint executable bit**: the manifest copies `entrypoint.sh` and then runs `chmod +x /app/entrypoint.sh` so the file remains executable through the update.
+- **Intelligence + QIDs `vuln_type` filter mismatch**: filter values now match the strings Qualys returns from the Knowledge Base API. Previously a casing/value mismatch caused the filter to return empty result sets.
+- **Intelligence severity filter X-remove button**: clicking the × on a severity chip now actually clears the filter; previously the chip was removed visually but the filter stayed applied.
 - **Tag detail crash**: missing `isEditable` variable after banner rewrite caused "Failed to load tag detail" on every click.
 - **Tag ownership filter**: "Qualys-managed only" filter now uses `tag_origin='system'` instead of `is_user_created=0` which was always empty.
 - **SYSTEM pill accuracy**: driven by `tag_origin` (heuristic name list) instead of `is_user_created` (unreliable — Qualys API doesn't expose `reservedType`).
