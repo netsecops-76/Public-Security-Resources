@@ -1127,6 +1127,73 @@ def update_version():
     return jsonify({"version": get_current_version()})
 
 
+@app.route("/api/update/schedule", methods=["GET"])
+def update_schedule_get():
+    """Return the auto-update schedule config + next-run info."""
+    from app.database import get_auto_update_config
+    from app.scheduler import get_auto_update_schedule_info
+    cfg = get_auto_update_config()
+    tz = cfg.get("timezone") or "UTC"
+    info = get_auto_update_schedule_info(tz) or {}
+    return jsonify({
+        "enabled": bool(cfg.get("enabled")),
+        "day_of_week": cfg.get("day_of_week"),
+        "hour": cfg.get("hour"),
+        "minute": cfg.get("minute"),
+        "timezone": tz,
+        "last_check": cfg.get("last_check"),
+        "last_status": cfg.get("last_status"),
+        "last_error": cfg.get("last_error"),
+        "last_version": cfg.get("last_version"),
+        "next_run_local": info.get("next_run_local"),
+        "next_run_utc": info.get("next_run_utc"),
+    })
+
+
+@app.route("/api/update/schedule", methods=["POST"])
+def update_schedule_post():
+    """Save the auto-update schedule and (re)schedule the APScheduler job."""
+    from app.database import get_auto_update_config, save_auto_update_config
+    from app.scheduler import (
+        schedule_auto_update,
+        remove_auto_update_schedule,
+        get_auto_update_schedule_info,
+    )
+    data = request.json or {}
+    enabled = bool(data.get("enabled"))
+    try:
+        day = int(data.get("day_of_week", 6))
+        hour = int(data.get("hour", 0))
+        minute = int(data.get("minute", 0))
+    except (TypeError, ValueError):
+        return jsonify({"error": "day_of_week, hour and minute must be integers"}), 400
+    if not (0 <= day <= 6 and 0 <= hour <= 23 and 0 <= minute <= 59):
+        return jsonify({"error": "day_of_week 0-6, hour 0-23, minute 0-59"}), 400
+    tz = (data.get("timezone") or "UTC").strip() or "UTC"
+
+    save_auto_update_config(enabled, day, hour, minute, tz)
+    if enabled:
+        schedule_auto_update(day, hour, minute, tz)
+    else:
+        remove_auto_update_schedule()
+
+    cfg = get_auto_update_config()
+    info = get_auto_update_schedule_info(tz) or {}
+    return jsonify({
+        "enabled": bool(cfg.get("enabled")),
+        "day_of_week": cfg.get("day_of_week"),
+        "hour": cfg.get("hour"),
+        "minute": cfg.get("minute"),
+        "timezone": cfg.get("timezone") or "UTC",
+        "last_check": cfg.get("last_check"),
+        "last_status": cfg.get("last_status"),
+        "last_error": cfg.get("last_error"),
+        "last_version": cfg.get("last_version"),
+        "next_run_local": info.get("next_run_local"),
+        "next_run_utc": info.get("next_run_utc"),
+    })
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Routes — QIDs (Knowledge Base)
 # ═══════════════════════════════════════════════════════════════════════════
