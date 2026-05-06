@@ -329,6 +329,50 @@ def test_backfill_threat_columns_tolerates_malformed_correlation_json():
     assert get_vuln(55001)["threat_active_attacks"] == 1
 
 
+def test_upsert_vuln_handles_correlation_shape_variations():
+    # Regression for the QID Full Sync abort: upsert_vuln must tolerate
+    # all shapes xmltodict can produce for CORRELATION.EXPLOITS.EXPLT_SRC
+    # (and the MALWARE.MW_SRC twin) — dict, list-of-dicts, bare string,
+    # or None entries from empty self-closing elements.
+    from app.database import upsert_vuln, get_vuln
+
+    # Case 1: None entries mixed with valid dicts in the list
+    upsert_vuln({
+        "QID": "60001", "TITLE": "None in EXPLT_SRC", "SEVERITY_LEVEL": "3",
+        "CORRELATION": {
+            "EXPLOITS": {"EXPLT_SRC": [None, {"EXPLT_LIST": {"EXPLT": [{"REF": "EDB-1"}]}}, None]},
+            "MALWARE": {"MW_SRC": [None]},
+        },
+    })
+
+    # Case 2: bare-string EXPLT_SRC (the #5 shape)
+    upsert_vuln({
+        "QID": "60002", "TITLE": "String EXPLT_SRC", "SEVERITY_LEVEL": "3",
+        "CORRELATION": {"EXPLOITS": {"EXPLT_SRC": "unexpected-string"}},
+    })
+
+    # Case 3: EXPLT_LIST itself is None (empty self-closing element)
+    upsert_vuln({
+        "QID": "60003", "TITLE": "None EXPLT_LIST", "SEVERITY_LEVEL": "3",
+        "CORRELATION": {"EXPLOITS": {"EXPLT_SRC": {"EXPLT_LIST": None}}},
+    })
+
+    # Case 4: single dict (xmltodict's "one entry" shape) still works
+    upsert_vuln({
+        "QID": "60004", "TITLE": "Single dict EXPLT_SRC", "SEVERITY_LEVEL": "3",
+        "CORRELATION": {
+            "EXPLOITS": {"EXPLT_SRC": {"EXPLT_LIST": {"EXPLT": {"REF": "EDB-99"}}}},
+            "MALWARE": {"MW_SRC": {"MW_LIST": {"MW_INFO": [{"NAME": "X"}, {"NAME": "Y"}]}}},
+        },
+    })
+
+    assert get_vuln(60001)["exploit_count"] == 1
+    assert get_vuln(60002)["exploit_count"] == 0
+    assert get_vuln(60003)["exploit_count"] == 0
+    assert get_vuln(60004)["exploit_count"] == 1
+    assert get_vuln(60004)["malware_count"] == 2
+
+
 def test_search_vulns_fts():
     # Insert a couple of vulns
     upsert_vuln({"QID": "100", "TITLE": "Apache Struts Remote Code Execution", "SEVERITY_LEVEL": "5", "CATEGORY": "Web Server"})

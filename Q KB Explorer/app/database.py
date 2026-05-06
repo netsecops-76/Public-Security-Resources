@@ -915,39 +915,7 @@ def _backfill_threat_columns(conn):
                 elif isinstance(t, str):
                     ti_tags.add(t)
 
-            exploit_count = 0
-            malware_count = 0
-            if corr:
-                exploits_section = corr.get("EXPLOITS", {}) or {}
-                explt_srcs = exploits_section.get("EXPLT_SRC") or []
-                if isinstance(explt_srcs, dict):
-                    explt_srcs = [explt_srcs]
-                elif not isinstance(explt_srcs, list):
-                    explt_srcs = []
-                for src in explt_srcs:
-                    if not isinstance(src, dict):
-                        continue
-                    explt_list = (src.get("EXPLT_LIST") or {}).get("EXPLT") or []
-                    if isinstance(explt_list, dict):
-                        explt_list = [explt_list]
-                    elif not isinstance(explt_list, list):
-                        explt_list = []
-                    exploit_count += len(explt_list)
-                malware_section = corr.get("MALWARE", {}) or {}
-                mw_srcs = malware_section.get("MW_SRC") or []
-                if isinstance(mw_srcs, dict):
-                    mw_srcs = [mw_srcs]
-                elif not isinstance(mw_srcs, list):
-                    mw_srcs = []
-                for src in mw_srcs:
-                    if not isinstance(src, dict):
-                        continue
-                    mw_list = (src.get("MW_LIST") or {}).get("MW_INFO") or []
-                    if isinstance(mw_list, dict):
-                        mw_list = [mw_list]
-                    elif not isinstance(mw_list, list):
-                        mw_list = []
-                    malware_count += len(mw_list)
+            exploit_count, malware_count = _count_correlation_exploits_and_malware(corr)
 
             conn.execute(
                 """UPDATE vulns SET
@@ -1350,6 +1318,46 @@ def _xml_text(val):
     return val
 
 
+def _count_correlation_exploits_and_malware(correlation) -> tuple[int, int]:
+    # Walks Qualys' CORRELATION block to count exploits and malware
+    # entries. xmltodict can produce four shapes for each *_SRC and
+    # *_LIST element — dict, list-of-dicts, bare string, or None
+    # (empty self-closing element). All four are tolerated here.
+    # Used by both upsert_vuln (live ingest) and
+    # _backfill_threat_columns (init-time recompute) so a fix lands
+    # in one place.
+    if not isinstance(correlation, dict):
+        return 0, 0
+
+    def _count(section_key, src_key, list_key, leaf_key):
+        section = correlation.get(section_key) or {}
+        if not isinstance(section, dict):
+            return 0
+        srcs = section.get(src_key) or []
+        if isinstance(srcs, dict):
+            srcs = [srcs]
+        elif not isinstance(srcs, list):
+            return 0
+        count = 0
+        for src in srcs:
+            if not isinstance(src, dict):
+                continue
+            container = src.get(list_key) or {}
+            if not isinstance(container, dict):
+                continue
+            leaves = container.get(leaf_key) or []
+            if isinstance(leaves, dict):
+                leaves = [leaves]
+            elif not isinstance(leaves, list):
+                continue
+            count += len(leaves)
+        return count
+
+    exploit_count = _count("EXPLOITS", "EXPLT_SRC", "EXPLT_LIST", "EXPLT")
+    malware_count = _count("MALWARE", "MW_SRC", "MW_LIST", "MW_INFO")
+    return exploit_count, malware_count
+
+
 def _fts5_safe(q: str) -> str:
     """Prepare a user query for FTS5 by quoting each token individually.
 
@@ -1429,27 +1437,7 @@ def upsert_vuln(vuln: dict, conn=None):
     threat_cisa_kev = 1 if "Cisa_Known_Exploited_Vulns" in ti_tags else 0
 
     # Count exploits and malware from correlation
-    exploit_count = 0
-    malware_count = 0
-    if correlation:
-        exploits_section = correlation.get("EXPLOITS", {}) or {}
-        explt_srcs = exploits_section.get("EXPLT_SRC") or []
-        if isinstance(explt_srcs, dict):
-            explt_srcs = [explt_srcs]
-        for src in explt_srcs:
-            explt_list = (src.get("EXPLT_LIST") or {}).get("EXPLT") or []
-            if isinstance(explt_list, dict):
-                explt_list = [explt_list]
-            exploit_count += len(explt_list)
-        malware_section = correlation.get("MALWARE", {}) or {}
-        mw_srcs = malware_section.get("MW_SRC") or []
-        if isinstance(mw_srcs, dict):
-            mw_srcs = [mw_srcs]
-        for src in mw_srcs:
-            mw_list = (src.get("MW_LIST") or {}).get("MW_INFO") or []
-            if isinstance(mw_list, dict):
-                mw_list = [mw_list]
-            malware_count += len(mw_list)
+    exploit_count, malware_count = _count_correlation_exploits_and_malware(correlation)
 
     # Software list
     software = vuln.get("SOFTWARE_LIST", {}) or {}
