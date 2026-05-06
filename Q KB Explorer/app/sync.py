@@ -175,9 +175,16 @@ class SyncEngine:
             # backfill batch is one fsync, not 100.
             with get_db() as conn:
                 for v in vulns:
-                    if isinstance(v, dict):
+                    if not isinstance(v, dict):
+                        continue
+                    try:
                         upsert_vuln(v, conn=conn)
                         total_added += 1
+                    except Exception as e:
+                        logger.warning(
+                            "QID backfill: skipping QID %s (%s: %s)",
+                            v.get("QID"), type(e).__name__, e,
+                        )
             if self.on_progress:
                 self.on_progress({
                     "type": "qids", "status": "syncing",
@@ -464,9 +471,18 @@ class SyncEngine:
             # large windows). Batched, it's one commit per page.
             with get_db() as conn:
                 for vuln in vulns:
-                    if isinstance(vuln, dict):
+                    if not isinstance(vuln, dict):
+                        continue
+                    # Per-record isolation: a single malformed vuln must
+                    # not abort the whole sync. Log the QID and move on.
+                    try:
                         upsert_vuln(vuln, conn=conn)
                         total_vulns += 1
+                    except Exception as e:
+                        logger.warning(
+                            "QID sync: skipping QID %s (%s: %s)",
+                            vuln.get("QID"), type(e).__name__, e,
+                        )
             logger.info("QID page: %d vulns (total: %d, expected: %d)",
                         len(vulns), total_vulns, expected_total)
             if self.sync_log:
@@ -737,19 +753,27 @@ class SyncEngine:
             # especially expensive).
             with get_db() as conn:
                 for i, control in enumerate(controls):
-                    if isinstance(control, dict):
+                    if not isinstance(control, dict):
+                        continue
+                    try:
                         upsert_control(control, conn=conn)
                         total_controls += 1
-                        # Log first control keys for mandate/framework discovery
-                        if total_controls == 1 and self.sync_log:
-                            self.sync_log.event("CONTROL_KEYS_DISCOVERY", {
-                                "keys": list(control.keys()),
-                                "has_FRAMEWORK_LIST": "FRAMEWORK_LIST" in control,
-                                "has_MANDATE_LIST": "MANDATE_LIST" in control,
-                            })
-                        # Per-control progress every 50 controls
-                        if self.on_progress and (i + 1) % 50 == 0:
-                            self.on_progress({"type": "cids", "status": "processing", "items_synced": total_controls, "page_items": page_total, "pages_fetched": page_num, "processing_item": i + 1, "processing_total": page_total, "expected_total": expected_total})
+                    except Exception as e:
+                        logger.warning(
+                            "CID sync: skipping CID %s (%s: %s)",
+                            control.get("ID"), type(e).__name__, e,
+                        )
+                        continue
+                    # Log first control keys for mandate/framework discovery
+                    if total_controls == 1 and self.sync_log:
+                        self.sync_log.event("CONTROL_KEYS_DISCOVERY", {
+                            "keys": list(control.keys()),
+                            "has_FRAMEWORK_LIST": "FRAMEWORK_LIST" in control,
+                            "has_MANDATE_LIST": "MANDATE_LIST" in control,
+                        })
+                    # Per-control progress every 50 controls
+                    if self.on_progress and (i + 1) % 50 == 0:
+                        self.on_progress({"type": "cids", "status": "processing", "items_synced": total_controls, "page_items": page_total, "pages_fetched": page_num, "processing_item": i + 1, "processing_total": page_total, "expected_total": expected_total})
             logger.info("CID page %d: %d controls (total: %d, expected: %d)", page_num, len(controls), total_controls, expected_total)
             if self.sync_log:
                 self.sync_log.event("PAGE_PROCESSED", {"page": page_num, "items_on_page": len(controls), "total_so_far": total_controls, "expected_total": expected_total, "top_keys": top_keys, "target_list_found": response is not None and response != {}})
@@ -905,9 +929,16 @@ class SyncEngine:
             # policy_controls inserts and a CID-resolution UPDATE.
             with get_db() as conn:
                 for policy in policies:
-                    if isinstance(policy, dict):
+                    if not isinstance(policy, dict):
+                        continue
+                    try:
                         upsert_policy(policy, conn=conn)
                         total_policies += 1
+                    except Exception as e:
+                        logger.warning(
+                            "Policy sync: skipping policy %s (%s: %s)",
+                            policy.get("ID"), type(e).__name__, e,
+                        )
             logger.info("Policy page %d: %d policies (total: %d, expected: %d)", page_num, len(policies), total_policies, expected_total)
             if self.sync_log:
                 self.sync_log.event("PAGE_PROCESSED", {"page": page_num, "items_on_page": len(policies), "total_so_far": total_policies, "expected_total": expected_total, "top_keys": top_keys, "target_list_found": response is not None and response != {}})
@@ -1171,13 +1202,20 @@ class SyncEngine:
             # Single transaction for the whole page of tags.
             with get_db() as conn:
                 for tag in page_tags:
-                    tid = upsert_tag(tag, credential_id=self.credential_id,
-                                    source_platform=self.platform_id,
-                                    source_subscription=self.credential_id,
-                                    conn=conn)
-                    if tid is not None:
-                        synced_tag_ids.append(tid)
-                    total_tags += 1
+                    try:
+                        tid = upsert_tag(tag, credential_id=self.credential_id,
+                                        source_platform=self.platform_id,
+                                        source_subscription=self.credential_id,
+                                        conn=conn)
+                        if tid is not None:
+                            synced_tag_ids.append(tid)
+                        total_tags += 1
+                    except Exception as e:
+                        logger.warning(
+                            "Tag sync: skipping tag %s (%s: %s)",
+                            (tag.get("id") if isinstance(tag, dict) else None),
+                            type(e).__name__, e,
+                        )
 
             logger.info("Tag page %d: %d tags (total: %d)", pages_fetched, len(page_tags), total_tags)
             if self.sync_log:
@@ -1218,10 +1256,17 @@ class SyncEngine:
             for idx, tid in enumerate(synced_tag_ids, start=1):
                 detail = self.client.get_tag_detail(tid)
                 if detail:
-                    upsert_tag(detail, credential_id=self.credential_id,
-                              source_platform=self.platform_id,
-                              source_subscription=self.credential_id)
-                    enriched += 1
+                    try:
+                        upsert_tag(detail, credential_id=self.credential_id,
+                                  source_platform=self.platform_id,
+                                  source_subscription=self.credential_id)
+                        enriched += 1
+                    except Exception as e:
+                        logger.warning(
+                            "Tag enrich: skipping tag %s (%s: %s)",
+                            tid, type(e).__name__, e,
+                        )
+                        failed += 1
                 else:
                     failed += 1
                 if self.on_progress and (idx % 5 == 0 or idx == total_to_enrich):
@@ -1450,10 +1495,19 @@ class SyncEngine:
                 # pm_patch_qids and pm_patch_cves inserts.
                 with get_db() as conn:
                     for patch in patches:
+                        if not isinstance(patch, dict):
+                            continue
                         patch.setdefault("platform", platform)
-                        upsert_pm_patch(patch, conn=conn)
-                        plat_total += 1
-                        grand_total += 1
+                        try:
+                            upsert_pm_patch(patch, conn=conn)
+                            plat_total += 1
+                            grand_total += 1
+                        except Exception as e:
+                            logger.warning(
+                                "PM patch sync: skipping patch %s (%s: %s)",
+                                patch.get("id") or patch.get("patchId"),
+                                type(e).__name__, e,
+                            )
 
                 if self.sync_log:
                     self.sync_log.event("PAGE_PROCESSED", {
