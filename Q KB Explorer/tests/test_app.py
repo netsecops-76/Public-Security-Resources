@@ -1459,10 +1459,11 @@ def test_tags_filter_only_user(client):
     _seed_test_tags()
     resp = client.get("/api/tags?only_user=1")
     data = resp.get_json()
-    # User-created: 100 (rule + creator), 50 (creator alice). Tag 1 has
-    # reservedType=BUSINESS_UNIT (system); tag 999 is ambiguous and
-    # defaults to system unless propagation finds a user-created child.
-    assert data["total"] == 2
+    # User-created: 100 (rule + creator alice), 50 (creator alice), 999
+    # (ambiguous — no reservedType means user under the current policy:
+    # see _is_user_created in app/database.py). Tag 1 alone has
+    # reservedType=BUSINESS_UNIT and stays system.
+    assert data["total"] == 3
     assert all(r["is_user_created"] == 1 for r in data["results"])
 
 
@@ -1470,9 +1471,10 @@ def test_tags_filter_only_system(client):
     _seed_test_tags()
     resp = client.get("/api/tags?only_system=1")
     data = resp.get_json()
-    # Tag 1 (reservedType) and tag 999 (no rule, no creator, no children
-    # → system by default-deny baseline)
-    assert data["total"] == 2
+    # Only tag 1 — reservedType=BUSINESS_UNIT is the single discriminator
+    # for system classification under the current policy. Tag 999
+    # (ambiguous, no metadata) defaults to user, not system.
+    assert data["total"] == 1
     assert all(r["is_user_created"] == 0 for r in data["results"])
 
 
@@ -1512,15 +1514,23 @@ def test_tags_detail_system_tag_marks_is_user_created_false(client):
     assert body["reserved_type"] == "BUSINESS_UNIT"
 
 
-def test_tags_default_deny_for_ambiguous_leaf_tags(client):
+def test_tags_default_allow_for_ambiguous_leaf_tags(client):
     """A tag with no reservedType, no ruleType, no creator, and no
-    children is provisionally treated as system. This catches Qualys-
-    managed organizer tags like Cloud Agent and Business Units that the
-    search API returns with no discriminating metadata."""
+    children classifies as user-created. Qualys exposes reservedType
+    on every tag it provisions itself (BUSINESS_UNIT, CLOUD_AGENT,
+    EASM_*, etc.); the absence of reservedType is the strongest
+    available signal that a real operator created the tag — even if
+    they did so without populating any other metadata. Operators can
+    flip the classification per-tag via /api/tags/<id>/classify when
+    a Qualys-installed organizer slips through unlabelled.
+
+    See _is_user_created in app/database.py for the policy: only
+    reservedType OR a system-sentinel creator (system/qualys/auto)
+    classifies a tag as system."""
     _seed_test_tags()
     resp = client.get("/api/tags/999")
     body = resp.get_json()
-    assert body["is_user_created"] == 0
+    assert body["is_user_created"] == 1
     assert body["reserved_type"] is None
     assert body["created_by"] is None
     assert (body["rule_type"] or "") == ""
@@ -1542,17 +1552,27 @@ def test_tags_user_created_when_rule_present(client):
 
 
 def test_tags_propagation_flips_organizer_parent_to_user_created(client):
-    """A rule-less parent tag whose only signal is having a user-created
-    child should be flipped to user-created by the propagation step.
+    """A parent that auto-classifies as system because of a system-
+    sentinel creator (e.g. Qualys-internal automation) should be
+    flipped to user-created by the propagation step when any of its
+    children is already user-created.
 
-    This is the case where a user makes 'OS: Operating System' as a static
-    parent organizer for their 'OS: Linux' (with rule) child. The parent
-    has no rule itself but is clearly user-authored."""
+    Use case: a Qualys subscription-provisioning script created an
+    organizer parent under the 'qualys' service account, but the
+    operator built rule-based child tags under it. The parent is the
+    operator's tree even though Qualys-internal tooling stamped it.
+
+    Not exercised under the current default-allow policy on no-
+    reservedType tags — propagation only matters when the parent's
+    auto-classification really did land on system, which today
+    requires either a system-sentinel creator or a reservedType."""
     from app.database import (
         upsert_tag, get_tag, get_db, _propagate_user_classification,
     )
-    # Parent: no rule, no creator → baseline system
-    upsert_tag({"id": 8000, "name": "Operating System TAG (organizer)"})
+    # Parent: creator='qualys' triggers the system-sentinel path in
+    # _is_user_created → baseline system, no reservedType.
+    upsert_tag({"id": 8000, "name": "Operating System TAG (organizer)",
+                "createdBy": {"username": "qualys"}})
     # Child: has a rule → baseline user
     upsert_tag({
         "id": 8001, "name": "OS: Linux", "parentTagId": 8000,
@@ -2002,12 +2022,18 @@ def test_qualys_client_get_tag_detail_returns_none_on_error(monkeypatch):
 
 def test_tag_override_forces_user_classification(client):
     """Manual 'user' override flips an auto-classified system tag to user
-    in /api/tags/<id> and in /api/tags?only_user=1 listings."""
+    in /api/tags/<id> and in /api/tags?only_user=1 listings.
+
+    Setup uses creator='system' to trigger the system-sentinel path in
+    _is_user_created (see app/database.py). Under the current policy a
+    no-metadata tag defaults to user, so a tag without a sentinel
+    creator wouldn't auto-classify as system in the first place."""
     from app.database import upsert_tag
-    upsert_tag({"id": 4001, "name": "operations diagnostic TAGs"})
+    upsert_tag({"id": 4001, "name": "operations diagnostic TAGs",
+                "createdBy": {"username": "system"}})
 
     body = client.get("/api/tags/4001").get_json()
-    assert body["is_user_created"] == 0  # auto says system (no rule, no creator)
+    assert body["is_user_created"] == 0  # auto says system (sentinel creator)
     assert body["is_user_created_auto"] == 0
 
     resp = client.post(
@@ -2197,22 +2223,45 @@ def test_tag_editability_404_for_missing(client):
     assert resp.status_code == 404
 
 
-def test_tags_filter_values_rule_types_includes_canonical_set(client):
-    """The rule_types dropdown should always include Qualys's canonical
-    rule types so users see every option even before any tag syncs.
-    Observed-but-unknown types are merged in too."""
-    from app.database import upsert_tag, TAG_RULE_TYPES_KNOWN
-    # Add one tag with a never-before-seen rule type
-    upsert_tag({"id": 5500, "name": "x", "ruleType": "EXPERIMENTAL_TYPE"})
+def test_tags_filter_values_rule_types_returns_observed_only(client):
+    """The rule_types filter dropdown reflects the user's real data,
+    not Qualys's canonical type list. Showing rule types the user
+    has no tags of would clutter the dropdown with unreachable
+    filter options.
+
+    See get_tag_filter_values in app/database.py — for rule_types we
+    intentionally return DISTINCT rule_type FROM tags WHERE rule_type
+    IS NOT NULL, no canonical-floor merge.
+
+    Use a unique sentinel rule_type value that no other test seeds
+    (avoids ordering-dependent flakes) and assert: (1) every value
+    returned is something we actually inserted into the DB, and (2)
+    the sentinel made it through. Assertions about *absence* of
+    canonical types would couple this test to whatever tags other
+    tests left behind in the shared session DB."""
+    from app.database import upsert_tag, get_db
+    sentinel = "QKBE_TEST_OBSERVED_ONLY_SENTINEL"
+    upsert_tag({"id": 5500, "name": "x", "ruleType": sentinel})
+
+    # Snapshot what's actually in the DB so we can assert "no canonical
+    # floor merge" without caring which specific tags prior tests added.
+    with get_db() as conn:
+        observed_in_db = {
+            r[0] for r in conn.execute(
+                "SELECT DISTINCT rule_type FROM tags "
+                "WHERE rule_type IS NOT NULL AND rule_type != ''"
+            ).fetchall()
+        }
+
     resp = client.get("/api/tags/filter-values?field=rule_types")
     assert resp.status_code == 200
     body = resp.get_json()
-    # All canonical types present
-    for known in ("ASSET_INVENTORY", "GROOVY", "NETWORK_RANGE",
-                  "GLOBAL_ASSET_VIEW", "BUSINESS_INFORMATION"):
-        assert known in body
-    # Plus the observed novelty
-    assert "EXPERIMENTAL_TYPE" in body
+
+    # Sentinel is present (round-trip works)
+    assert sentinel in body
+    # Endpoint returns a subset of what's actually in tags.rule_type —
+    # nothing canonical-but-unobserved gets injected.
+    assert set(body).issubset(observed_in_db)
     # Sorted alphabetically
     assert body == sorted(body)
 
@@ -3329,7 +3378,9 @@ def test_audit_single_rule_unknown_returns_empty(client):
 
 def test_validate_warns_on_os_regex_legacy():
     """OS_REGEX still works but should emit a 'legacy' warning that
-    points operators at the ASSET_INVENTORY replacement."""
+    points operators at the GLOBAL_ASSET_VIEW replacement. ASSET_INVENTORY
+    is itself legacy now (see RULE_TYPE_STATUS in app/tag_validation.py),
+    so the modern recommendation chain is OS_REGEX → GLOBAL_ASSET_VIEW."""
     from app.tag_validation import validate_tag_payload
     r = validate_tag_payload({"name": "T", "ruleType": "OS_REGEX",
                               "ruleText": "^Windows.*"})
@@ -3337,7 +3388,7 @@ def test_validate_warns_on_os_regex_legacy():
     assert "ruleType" in r.warnings
     msgs = " ".join(r.warnings["ruleType"])
     assert "LEGACY" in msgs
-    assert "ASSET_INVENTORY" in msgs
+    assert "GLOBAL_ASSET_VIEW" in msgs
 
 
 def test_validate_warns_on_groovy_restricted():
@@ -3363,11 +3414,13 @@ def test_validate_warns_on_operating_system_legacy():
 
 
 def test_validate_no_status_warning_for_preferred_rule_type():
-    """ASSET_INVENTORY is the recommended replacement and shouldn't
-    carry a status warning."""
+    """GLOBAL_ASSET_VIEW is the current preferred rule type for OS /
+    inventory targeting (see RULE_TYPE_STATUS in app/tag_validation.py
+    — it's the recommended replacement for both OS_REGEX and the now-
+    legacy ASSET_INVENTORY) and shouldn't carry a status warning."""
     from app.tag_validation import validate_tag_payload
-    r = validate_tag_payload({"name": "T", "ruleType": "ASSET_INVENTORY",
-                              "ruleText": "operatingSystem:Windows"})
+    r = validate_tag_payload({"name": "T", "ruleType": "GLOBAL_ASSET_VIEW",
+                              "ruleText": "operatingSystem.category1:`Windows`"})
     assert r.ok is True
     # ruleType warnings array should NOT contain a [LEGACY] or [RESTRICTED] tag
     rt_warnings = r.warnings.get("ruleType", [])

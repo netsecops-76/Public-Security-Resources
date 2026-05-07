@@ -4,7 +4,8 @@
 
 ## [Unreleased]
 
-_No changes pending release._
+### Tests
+- **Aligned 8 stale tag classification + validation tests with the production policy** that has been live since the v2.1 tag overhaul. Tests had encoded an older default-deny baseline ("ambiguous tag → system") and an older Qualys rule-type recommendation chain ("OS_REGEX → ASSET_INVENTORY"). Production code in `_is_user_created` (app/database.py) actually uses default-allow ("only reservedType or a system-sentinel creator classifies as system") and `RULE_TYPE_STATUS` (app/tag_validation.py) recommends `GLOBAL_ASSET_VIEW` for OS targeting because `ASSET_INVENTORY` is itself now legacy per Qualys docs. Tests were never updated as the code evolved, leaving the suite at 240/248 with 8 red across every release. Suite is now 248/248. No production code touched in this change — only the tests and their docstrings (each updated test now points at the production code path it pins so future drift is visible). Hard-coded protections in the classification path (sentinel creator list, `_SYSTEM_PROVISIONED_NAMES`, `_CONNECTOR_NAME_PATTERNS`, `RULE_TYPE_STATUS`, `_LOCKED_RESERVED_TYPES`) were intentionally preserved — they encode real Qualys subscription behavior tuned against live data and have no API-driven alternative.
 
 ## [v2.4.1] — 2026-05-06 — init_db Migration Hot-Fix
 
