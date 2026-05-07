@@ -1,6 +1,6 @@
 # Q KB Explorer — Architecture
 
-> Last updated: 2026-05-06
+> Last updated: 2026-05-06 (v2.4.1)
 
 ## System Overview
 
@@ -265,7 +265,8 @@ Both numbers move with hardware. Two reference environments:
 | High-end dev (Apple Silicon Mac, 14 vCPU / 16 GiB Docker, NVMe) — early v2.4 (executemany only) | **1 h 21 min 13 s** | 208,760 QIDs, `VERIFY_OK`. Throughput collapsed from ~120K rec/min in early chunks to ~1,600 rec/min in the final chunk — same DB-growth curve as the RHEL run. |
 | Same Mac — **v2.4 bundled (executemany + bleach Cleaner reuse + FTS5 deferred + source-hash skip)** | **8 min 5 s** | 208,765 QIDs, `VERIFY_OK`, zero errors. **10× faster than executemany-only on the same hardware**, faster than the v2.1.0 historical baseline. The slowdown curve is gone — per-chunk write times stayed flat (~2–5 s for 5K-record chunks) across the entire run. |
 | Low-end ops VM (RHEL 9.4 on Hyper-V/Azure, 2 vCPU) — pre-v2.4 | **3 h 34 min 46 s** | 208,760 QIDs, `VERIFY_OK`, zero errors. Throughput collapsed from ~23K rec/min in the first ~50K records to ~580 rec/min in the final chunks. |
-| Low-end ops VM — post-v2.4 bundled | TBD | will update after the v2.4 deploy on the same VM. Expectation based on the Mac speedup: order-of-magnitude reduction. |
+| Low-end ops VM — v2.4.0 in-place upgrade | **migration deadlock** | v2.4.0 init_db on a 3.3 GB / 208K legacy DB hung the entrypoint pre-flight import for 50+ minutes with zero forward write progress (CPU spinning on cached page reads, WAL frozen, gunicorn never bound). Two compounding bugs: single-transaction marker UPDATE blocking checkpoints, plus an O(N²) cursor thrash in the streaming backfill once the marker committed. Hidden on Mac M-series behind faster CPU. See BUGS.md BUG-017. **Fixed in v2.4.1**; recommended path on weak hardware is `docker compose down -v` + fresh Full Sync rather than waiting out the legacy migration. |
+| Low-end ops VM — v2.4.1 fresh install + Full Sync | TBD | post-v2.4.1 baseline pending. v2.4.1 init_db on a fresh DB completes in seconds (no legacy rows to migrate); Full Sync wall time is what matters here. Expectation based on the Mac v2.4 speedup: order-of-magnitude reduction from the 3 h 34 m pre-v2.4 baseline. |
 
 The low-end VM's per-chunk timing curve (pre-v2.4) shows the cost
 profile clearly: empty DB / no FTS5 fragmentation / minimal page

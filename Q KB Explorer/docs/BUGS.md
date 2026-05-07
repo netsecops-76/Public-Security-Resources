@@ -8,6 +8,25 @@ _No open bugs._
 
 ## Resolved Bugs
 
+### BUG-017: v2.4 init_db migration on legacy DBs hangs entrypoint pre-flight indefinitely — RESOLVED 2026-05-06
+- **Severity:** Critical (blocks the container from accepting traffic after auto-update on any host with a pre-v2.4 DB)
+- **Component:** backend (`app/database.py` `init_db` marker UPDATE + `_backfill_threat_columns`, `entrypoint.sh`)
+- **Description:** A user on a 2 vCPU Hyper-V Azure RHEL VM applied the v2.4 in-app update against a 3.3 GB / 208,765 QID database from a pre-v2.4 Full Sync. Container restarted into v2.4 code, ran `python3 -c "from app.main import app"` in the entrypoint pre-flight, and gunicorn never bound. After 53+ minutes:
+  - `/api/health` connection-reset (no listener on the port)
+  - WAL stable at 974 MB, main DB mtime frozen since container start
+  - `pid 9` in R state (CPU-bound), single-threaded, 141 MB RSS
+  - `/proc/9/io` snapshot: `rchar` advancing at 1.18 GB/s sustained, `wchar` flat for 5 sec, no fresh disk writes; cumulative `rchar` ≈ 3.26 TB on a 3.3 GB table = ~1000 full-table-scan equivalents from page cache
+- **Root cause (two compounding bugs):**
+  - **Marker UPDATE single-transaction stall.** `init_db` ran `UPDATE vulns SET threat_backfill_done = 1 WHERE <11-clause OR predicate>` as a single transaction over 208K rows. With no usable index for the disjunction, SQLite did a full table scan and held the write transaction open until completion; no autocheckpoint could fire, so the WAL grew to ~1 GB and main DB mtime never advanced. On slow storage this phase alone took 20+ minutes.
+  - **Streaming backfill cursor O(N²) thrash.** After the marker UPDATE committed, `_backfill_threat_columns` opened a long-running SELECT cursor on `WHERE threat_backfill_done = 0 AND threat_intelligence_json IS NOT NULL AND != 'null'` and committed UPDATEs between `fetchmany()` calls. In Python's sqlite3, `commit()` ends the read transaction the cursor was bound to; the next fetchmany reopens the read in a fresh post-commit snapshot. Because rows just marked `done=1` no longer match the predicate in the new snapshot, the cursor's WHERE re-evaluated against the live table on every iteration, and every batch became a partial-or-full table scan that skipped further into the table as more rows got marked. With no index on `threat_backfill_done` this was O(N²) in unmarked-row count. On a Mac this was hidden behind per-row Python work (bleach, xmltodict); on the RHEL VM the scan thrash dominated and CPU spun on cached page reads with zero forward write progress.
+- **Compounding visibility bug:** `entrypoint.sh` ran the pre-flight import with `2>/dev/null`, suppressing every `logger.info` call from `init_db`. Admins watching `docker logs` saw the SQLite-found line and then nothing for the entire stall. Indistinguishable from a hard hang.
+- **Resolution (v2.4.1):**
+  - Marker UPDATE chunked into `LIMIT 5000` rowid-batched loop with per-batch commits. WAL drains between batches via autocheckpoint. Marker is idempotent and resumable across kills (the marker column itself is the resume signal).
+  - Marker now always-runs idempotently inside `init_db`, not only on column-add. A killed migration restarts cleanly without losing committed batches.
+  - `_backfill_threat_columns` rewritten: build a worklist of qids upfront via one full scan (~3 MB of int memory for 200K rows — the qid list, not the JSON blobs that were the original v2.4 streaming motivation), then iterate the worklist in batches with indexed PK lookups (`SELECT ... WHERE qid IN (?, ?, ...)`). No long-running cursor across commits; no quadratic scan. Resumable across kills via the marker.
+  - `entrypoint.sh` pre-flight import no longer redirects stderr to `/dev/null`. New `_init_progress(msg)` helper writes migration phase markers to stderr with `flush=True`, visible in real time via `docker logs`. Tracebacks on import failure are also surfaced (useful diagnostic, not noise).
+  - New regression test `test_marker_update_chunked_is_resumable_across_kills` proves a kill mid-loop preserves committed work and a restart picks up exactly where it left off.
+
 ### BUG-016: PM Patches delta sync rejected with "Invalid QQL" — RESOLVED 2026-05-06
 - **Severity:** High
 - **Component:** backend (`app/sync.py` `sync_pm_patches`)

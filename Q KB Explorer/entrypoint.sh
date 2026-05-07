@@ -38,8 +38,19 @@ WORKERS="${QKBE_WORKERS:-1}"
 # ── Pre-flight: ensure dependencies are installed ─────────────────────────
 # After an in-app update, new code may require packages not yet installed.
 # This catches that on the next container start (restart after update).
+#
+# v2.4.1: stderr is intentionally NOT redirected to /dev/null. Pre-v2.4.1
+# this script ran the import with `2>/dev/null` to silence import-failure
+# tracebacks, but that also suppressed init_db migration progress prints
+# (see _init_progress in database.py). On slow storage with a legacy DB
+# the v2.4 threat_backfill_done marker UPDATE could run for 20+ minutes;
+# admins watching `docker logs` saw the SQLite-found line and then nothing
+# until gunicorn finally bound, with no way to tell whether the container
+# was hung or making progress. Letting stderr through means tracebacks ARE
+# visible on import failure (which is useful diagnostic info, not noise)
+# AND migration progress is visible during the silent pre-flight phase.
 if [ -f /app/requirements.txt ]; then
-    python3 -c "from app.main import app" 2>/dev/null
+    python3 -c "from app.main import app"
     if [ $? -ne 0 ]; then
         echo "[QKBE] App import failed — installing dependencies..."
         pip install --no-cache-dir -r /app/requirements.txt -q 2>/dev/null

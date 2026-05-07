@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import sqlite3
+import sys
 import threading
 import xml.etree.ElementTree as ET
 from collections import defaultdict
@@ -50,6 +51,29 @@ def _sanitize_html(value: str | None) -> str | None:
     return _BLEACH_CLEANER.clean(value)
 
 logger = logging.getLogger(__name__)
+
+
+def _init_progress(msg: str) -> None:
+    """Print init_db migration progress to stderr.
+
+    `logger` doesn't help here: init_db runs inside the entrypoint
+    pre-flight `python3 -c "from app.main import app"`, before gunicorn
+    starts. The logger has no handler attached at that point, so any
+    `logger.info(...)` call during init_db is silently dropped from
+    `docker logs`. Admins watching `docker logs -f` see frozen output
+    and can't tell whether a multi-minute migration is making progress
+    or has hung. This helper bypasses logging and writes directly to
+    stderr with `flush=True` so progress is visible in real time.
+    """
+    print(f"[QKBE init] {msg}", file=sys.stderr, flush=True)
+
+
+# Marker UPDATE batch size for the v2.4 threat_backfill_done one-time
+# migration. Sized so per-batch commits keep the WAL file from growing
+# past a few hundred MB on a 200K-row table. Smaller batches mean more
+# checkpoint overhead but better resumability across container kills;
+# 5000 is a good middle ground.
+_MARKER_BATCH_SIZE = 5000
 
 DB_PATH = os.environ.get("QKBE_DB_PATH", "/data/qkbe.db")
 _local = threading.local()
@@ -246,25 +270,65 @@ def init_db():
                 "ALTER TABLE vulns ADD COLUMN threat_backfill_done "
                 "INTEGER NOT NULL DEFAULT 0"
             )
-            # Belt-and-suspenders: any row whose flag columns are
-            # already populated (or has no JSON to derive from) does
-            # not need backfill. Mark them so we don't waste time.
-            conn.execute(
-                """UPDATE vulns SET threat_backfill_done = 1 WHERE
-                       threat_active_attacks > 0
-                    OR threat_exploit_public > 0
-                    OR threat_easy_exploit > 0
-                    OR threat_malware > 0
-                    OR threat_rce > 0
-                    OR threat_priv_escalation > 0
-                    OR threat_cisa_kev > 0
-                    OR exploit_count > 0
-                    OR malware_count > 0
-                    OR threat_intelligence_json IS NULL
-                    OR threat_intelligence_json = 'null'
-                """
-            )
             conn.commit()
+
+        # Belt-and-suspenders: any row whose flag columns are already
+        # populated (or has no JSON to derive from) does not need
+        # backfill. Mark them so we don't waste time.
+        #
+        # v2.4.1: chunked into LIMIT batches with per-batch commits.
+        # The pre-v2.4.1 single-transaction UPDATE on a 3.3 GB / 208K
+        # row table held a multi-hundred-MB write transaction open for
+        # 20+ minutes on slow storage (Hyper-V disk over Azure RHEL
+        # VM). No checkpoint could fire until the UPDATE committed, so
+        # the WAL grew past 900 MB before any progress flushed to the
+        # main DB file and gunicorn was blocked the entire time on
+        # the entrypoint pre-flight import.
+        #
+        # The chunked path:
+        #   - LIMIT 5000 per batch — bounds WAL growth between commits
+        #   - Per-batch commit — autocheckpoint fires, WAL drains
+        #   - Filter on threat_backfill_done = 0 — naturally resumable
+        #     across container kills (already-marked rows skip)
+        #   - Loop until UPDATE matches 0 rows — drains the queue
+        #     even if matched rows are interleaved across batches
+        # The marker column itself is the resume signal, so a kill
+        # mid-loop costs at most one batch (5000 rows) of redo work.
+        _init_progress("v2.4 threat_backfill_done marker: starting batched UPDATE")
+        marked = 0
+        batch_num = 0
+        while True:
+            batch_num += 1
+            rowcount = conn.execute(
+                """UPDATE vulns SET threat_backfill_done = 1
+                   WHERE rowid IN (
+                       SELECT rowid FROM vulns
+                       WHERE threat_backfill_done = 0
+                         AND (
+                                threat_active_attacks > 0
+                             OR threat_exploit_public > 0
+                             OR threat_easy_exploit > 0
+                             OR threat_malware > 0
+                             OR threat_rce > 0
+                             OR threat_priv_escalation > 0
+                             OR threat_cisa_kev > 0
+                             OR exploit_count > 0
+                             OR malware_count > 0
+                             OR threat_intelligence_json IS NULL
+                             OR threat_intelligence_json = 'null'
+                         )
+                       LIMIT ?
+                   )""",
+                (_MARKER_BATCH_SIZE,),
+            ).rowcount
+            conn.commit()
+            if rowcount <= 0:
+                break
+            marked += rowcount
+            _init_progress(
+                f"  marker batch {batch_num}: +{rowcount} rows (total {marked})"
+            )
+        _init_progress(f"v2.4 marker: complete ({marked} rows marked)")
 
         # Now run streaming backfill for any remaining un-classified
         # rows. Only counts rows that are actually candidates — no JSON
@@ -276,9 +340,13 @@ def init_db():
             "AND threat_backfill_done = 0"
         ).fetchone()[0]
         if needs_backfill > 0:
+            _init_progress(
+                f"streaming threat-column backfill: {needs_backfill} rows queued"
+            )
             logger.info("[Init] Threat-column backfill: %d rows queued",
                         needs_backfill)
             _backfill_threat_columns(conn, total=needs_backfill)
+            _init_progress("streaming threat-column backfill: complete")
             logger.info("[Init] Threat-column backfill: complete")
 
         # Index is created here (not in _SCHEMA_SQL) because executescript
@@ -986,34 +1054,59 @@ def _backfill_threat_columns(conn, total: int | None = None):
     from upsert_vuln, so this only runs after a schema upgrade — never as
     a steady-state cost.
 
-    v2.4 hardening:
-    - Streams rows in batches of 500 with cursor.fetchmany() instead of
-      loading every row into Python at once. The pre-v2.4 fetchall() on a
-      90K-vuln DB allocated hundreds of MB of Python heap (each row carries
-      its threat_intelligence_json / correlation_json blobs) and on
-      memory-constrained hosts ended up thrashing the allocator before
-      doing any DB work — symptom: WAL file mtime never advanced and the
-      container hung in the entrypoint pre-flight import for 10+ minutes.
-    - Commits each batch (and sets threat_backfill_done=1 on processed
-      rows) so progress is visible in the WAL, durable across kills, and
-      the next start picks up where the last left off instead of redoing
-      finished work.
-    - Logs every batch so init_db isn't silent during a multi-minute
-      catch-up after a major schema change.
+    v2.4.1 hardening (this is the SECOND rewrite — v2.4's streaming version
+    had a worse bug than the v2.3 fetchall() it replaced):
+
+    The v2.4 implementation opened a SELECT cursor on the live predicate
+    `threat_backfill_done = 0` and committed UPDATEs between fetchmany()
+    calls. In Python sqlite3, commit() on a connection ends the read
+    transaction the cursor was bound to; the next fetchmany() implicitly
+    starts a new read transaction with a fresh post-commit snapshot. The
+    cursor's WHERE clause is then re-evaluated against the new snapshot,
+    in which previously-marked rows have flipped to done=1 and no longer
+    match. With no index on threat_backfill_done, every fetchmany() did a
+    full table scan that skipped further into the table on each iteration
+    — quadratic in the number of unmarked rows.
+
+    On the Mac M-series this was hidden behind per-row Python work
+    (bleach + xmltodict). On a 2-vCPU RHEL VM with slow disk it locked
+    the entrypoint pre-flight in 100% CPU spin for 48+ minutes with zero
+    write progress (rchar climbing through page cache at 1+ GB/s, wchar
+    flat). See incident in BUGS.md BUG-017.
+
+    The v2.4.1 path:
+    - Build a worklist of qids upfront (one full scan, ~3 MB of ints in
+      memory for 200K rows). Cheap; the qid list doesn't carry the JSON
+      blobs that were the original v2.4 motivation for streaming.
+    - Iterate the worklist in batches. Per batch: SELECT the full rows
+      by qid IN (...) — indexed PK lookup, no full scan.
+    - UPDATE per row, commit per batch. No long-running cursor across
+      commits, no quadratic blowup.
+    - Resumable across kills via threat_backfill_done = 1 — restarts
+      build a smaller worklist each time.
     """
-    cur = conn.execute(
-        "SELECT qid, threat_intelligence_json, correlation_json FROM vulns "
+    qids_needed = [r[0] for r in conn.execute(
+        "SELECT qid FROM vulns "
         "WHERE threat_intelligence_json IS NOT NULL "
         "AND threat_intelligence_json != 'null' "
         "AND threat_backfill_done = 0"
-    )
+    )]
+    if total is None:
+        total = len(qids_needed)
+    if not qids_needed:
+        return
+
     processed = 0
-    while True:
-        batch = cur.fetchmany(_BACKFILL_BATCH_SIZE)
-        if not batch:
-            break
-        completed_qids: list[int] = []
-        for row in batch:
+    for batch_start in range(0, len(qids_needed), _BACKFILL_BATCH_SIZE):
+        batch_qids = qids_needed[batch_start:batch_start + _BACKFILL_BATCH_SIZE]
+        placeholders = ",".join("?" * len(batch_qids))
+        rows = conn.execute(
+            f"SELECT qid, threat_intelligence_json, correlation_json "
+            f"FROM vulns WHERE qid IN ({placeholders})",
+            batch_qids,
+        ).fetchall()
+
+        for row in rows:
             qid = row[0]
             try:
                 try:
@@ -1063,7 +1156,6 @@ def _backfill_threat_columns(conn, total: int | None = None):
                         qid,
                     ),
                 )
-                completed_qids.append(qid)
             except Exception as e:
                 # Mark malformed rows done anyway so we don't re-walk them
                 # forever. They keep their existing flag values; a future
@@ -1079,16 +1171,15 @@ def _backfill_threat_columns(conn, total: int | None = None):
                     )
                 except Exception:
                     pass
-        # Commit per batch so progress is durable.
+
         try:
             conn.commit()
         except Exception:
             pass
-        processed += len(batch)
-        if total:
-            logger.info("[Init] Threat-column backfill: %d/%d done", processed, total)
-        else:
-            logger.info("[Init] Threat-column backfill: %d done", processed)
+
+        processed += len(batch_qids)
+        logger.info("[Init] Threat-column backfill: %d/%d done", processed, total)
+        _init_progress(f"  backfill: {processed}/{total} done")
 
 
 # ═══════════════════════════════════════════════════════════════════════════

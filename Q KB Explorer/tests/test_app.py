@@ -483,15 +483,15 @@ def test_threat_backfill_done_marker_prevents_re_walk():
     assert rows[80003]["threat_active_attacks"] == 1
     assert rows[80003]["threat_cisa_kev"] == 1
     assert rows[80003]["threat_backfill_done"] == 1
-    # The no-JSON row (80004) doesn't need to flip done=1 — the detection
-    # query filters on threat_intelligence_json IS NOT NULL, so a no-JSON
-    # row is never a backfill candidate regardless of the marker. The
-    # belt-and-suspenders UPDATE only runs on column-add (ALTER TABLE),
-    # which doesn't fire here because the column already exists in the
-    # schema executescript ran when init_db booted the test client.
-    # Either value is correct; just assert the row exists with no flags.
+    # The no-JSON row (80004) — v2.4.1's chunked marker always runs
+    # idempotently, so threat_intelligence_json IS NULL matches the
+    # predicate and the row gets done=1 even when the column already
+    # exists. (Pre-v2.4.1 the marker only ran on column-add and this
+    # row stayed done=0; v2.4.1 made the marker always-run for
+    # resumability across container kills.)
     assert rows[80004]["threat_active_attacks"] == 0
     assert rows[80004]["threat_cisa_kev"] == 0
+    assert rows[80004]["threat_backfill_done"] == 1
 
     # Re-running init_db must find zero candidates and do nothing.
     # We can't observe "did nothing" directly, but we can verify the
@@ -514,6 +514,99 @@ def test_threat_backfill_done_marker_prevents_re_walk():
             "SELECT threat_backfill_done FROM vulns WHERE qid=?", (80005,)
         ).fetchone()[0]
     assert done == 1
+
+
+def test_marker_update_chunked_is_resumable_across_kills():
+    # v2.4.1 chunked the marker UPDATE so a kill mid-loop doesn't lose
+    # all progress. The marker column itself is the resume signal:
+    # rows already at done=1 don't match the predicate, so a re-run
+    # picks up exactly where the prior run stopped.
+    #
+    # Pre-v2.4.1 the marker was a single UPDATE ... WHERE inside one
+    # transaction. A kill rolled back every row, regardless of how
+    # many had logically been "evaluated". On a 200K row table over
+    # slow storage that meant 20+ minutes lost on every container
+    # kill (admin running `docker compose restart`, host reboot,
+    # OOM kill, etc.).
+    import json as _json
+    from app.database import get_db, _MARKER_BATCH_SIZE
+
+    # Insert N rows that all match the marker predicate (flag set).
+    # Use 3x batch size so we exercise multi-batch behavior without
+    # making the test slow.
+    N = _MARKER_BATCH_SIZE * 3 + 17
+    rows_to_insert = []
+    for i in range(N):
+        rows_to_insert.append((
+            90000 + i, f"qid-{i}", 4,
+            _json.dumps({"THREAT_INTEL": [{"#text": "Active_Attacks"}]}),
+            1, 0, 0, 0, 0, 0, 0, 0, 0,
+            0,  # threat_backfill_done = 0 simulates legacy / mid-flight kill
+        ))
+    with get_db() as conn:
+        conn.executemany(
+            """INSERT OR REPLACE INTO vulns (
+                qid, title, severity_level, threat_intelligence_json,
+                threat_active_attacks, threat_exploit_public, threat_easy_exploit,
+                threat_malware, threat_rce, threat_priv_escalation, threat_cisa_kev,
+                exploit_count, malware_count, threat_backfill_done
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            rows_to_insert,
+        )
+
+    # Run only ONE batch of the marker, then "kill" by stopping early.
+    # This is what an interrupted init_db looks like: some rows marked,
+    # most still done=0.
+    with get_db() as conn:
+        rowcount = conn.execute(
+            """UPDATE vulns SET threat_backfill_done = 1
+               WHERE rowid IN (
+                   SELECT rowid FROM vulns
+                   WHERE threat_backfill_done = 0
+                     AND threat_active_attacks > 0
+                     AND qid >= 90000 AND qid < 90000 + ?
+                   LIMIT ?
+               )""",
+            (N, _MARKER_BATCH_SIZE),
+        ).rowcount
+        conn.commit()
+    assert rowcount == _MARKER_BATCH_SIZE
+
+    # Verify partial progress: ~5000 done, ~5017 still pending.
+    with get_db() as conn:
+        partial_done = conn.execute(
+            "SELECT COUNT(*) FROM vulns "
+            "WHERE qid >= 90000 AND qid < 90000 + ? AND threat_backfill_done = 1",
+            (N,),
+        ).fetchone()[0]
+        partial_pending = conn.execute(
+            "SELECT COUNT(*) FROM vulns "
+            "WHERE qid >= 90000 AND qid < 90000 + ? AND threat_backfill_done = 0",
+            (N,),
+        ).fetchone()[0]
+    assert partial_done == _MARKER_BATCH_SIZE
+    assert partial_pending == N - _MARKER_BATCH_SIZE
+
+    # Resume: run init_db again. The chunked marker re-runs idempotently
+    # and only touches the still-pending rows — no redo of the partial
+    # work, no skip of any pending rows.
+    from app.database import init_db
+    init_db()
+
+    # All test rows must now be done=1.
+    with get_db() as conn:
+        final_done = conn.execute(
+            "SELECT COUNT(*) FROM vulns "
+            "WHERE qid >= 90000 AND qid < 90000 + ? AND threat_backfill_done = 1",
+            (N,),
+        ).fetchone()[0]
+        final_pending = conn.execute(
+            "SELECT COUNT(*) FROM vulns "
+            "WHERE qid >= 90000 AND qid < 90000 + ? AND threat_backfill_done = 0",
+            (N,),
+        ).fetchone()[0]
+    assert final_done == N
+    assert final_pending == 0
 
 
 def test_upsert_vuln_executemany_child_tables_parity():

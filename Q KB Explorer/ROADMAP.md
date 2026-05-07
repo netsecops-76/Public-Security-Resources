@@ -164,6 +164,22 @@ items previously listed here have moved to v2.3.
 |---|---------|------|--------|
 | 94 | `executemany` for child-table inserts in `upsert_vuln`, `upsert_control`, `upsert_policy`, `upsert_pm_patch` — closes the v2.0 follow-up that was tracked but never shipped | backend | Shipped |
 | 95 | Performance characteristics docs — side-by-side reference timings for a high-end developer Mac vs a low-end Hyper-V/Azure RHEL VM, plus hardware and code-side levers | docs | Shipped |
+| 96 | Source-hash skip on Delta sync — `source_hash` column on `vulns`, `upsert_vuln(skip_unchanged=True)` short-circuits when payload hash matches | backend | Shipped |
+| 97 | Pre-compiled bleach sanitizer reused across calls (was rebuilt per record). Module-level `_BLEACH_CLEANER` instance | backend | Shipped |
+| 98 | FTS5 deferred indexing for Full Sync — `fts5_deferred_for_vulns()` / `fts5_deferred_for_controls()` context managers drop triggers, bulk write, then `'rebuild'` once. Eliminates the per-row trigger cost that grew with index size | backend | Shipped |
+| 99 | `threat_backfill_done` marker column — `init_db` no longer re-walks tens of thousands of legacy vulns on every container start. Streaming backfill via `fetchmany()` for genuinely-needs-classification rows | backend | Shipped |
+
+---
+
+## Completed (v2.4.1 — init_db Migration Hot-Fix)
+
+| # | Feature | Type | Status |
+|---|---------|------|--------|
+| 100 | Marker UPDATE chunked into LIMIT 5000 rowid-batched loop with per-batch commits — eliminates the v2.4 single-transaction stall that blocked SQLite checkpoints during the legacy-DB migration on slow storage. Resumable across kills via the marker column itself | backend | Shipped |
+| 101 | `_backfill_threat_columns` rewritten — qid worklist + indexed PK lookups replace the v2.4 long-running cursor that hit O(N²) full-table scans on slow CPU because commit() between fetchmany() invalidated the cursor's read snapshot | backend | Shipped |
+| 102 | `_init_progress()` stderr helper + `entrypoint.sh` no longer redirects pre-flight stderr to `/dev/null` — migration phase markers now visible in real time via `docker logs`, replacing the prior frozen-output indistinguishable-from-hang behavior | backend | Shipped |
+| 103 | `test_marker_update_chunked_is_resumable_across_kills` regression test — proves a kill mid-loop preserves committed work and a restart picks up exactly where it left off | tests | Shipped |
+| 104 | BUGS-017 incident write-up + ARCHITECTURE Performance section updated with the v2.4 in-place upgrade failure mode and the v2.4.1 fix path | docs | Shipped |
 
 ---
 
@@ -174,8 +190,8 @@ items previously listed here have moved to v2.3.
 | 91 | PM Patch Catalog UI — dedicated browse/search tab for the 218K+ patch catalog with filters by platform, vendor, severity, security/non-security, and KB article. Direct patch-to-QID cross-navigation. | full-stack | Planned |
 | 92 | Tag migration improvements — inline rename editing in collision preflight, batch rename patterns, drag-and-drop parent reassignment, migration dry-run preview | full-stack | Planned |
 | 93 | QID solution text with structured vendor links — parse vendor fix URLs, advisory links, and KB articles from the solution/diagnosis HTML into clickable structured references for macOS, Unix, and other platforms not covered by the PM API | full-stack | Planned |
-| 96 | Skip child-table DELETE+rewrite when the source payload hash is unchanged. Doesn't help Full Sync; turns Delta near-free. | backend | Planned |
-| 97 | Pre-compiled bleach sanitizer reused across calls (currently rebuilt per record). Tracked from the v2.0 follow-up. | backend | Planned |
+| 105 | Source-hash skip extension — apply the v2.4 hash-skip pattern to `upsert_control`, `upsert_policy`, `upsert_pm_patch` so non-vuln Delta syncs benefit too | backend | Planned |
+| 106 | Add an index on `threat_backfill_done` so the marker UPDATE and worklist-build queries don't scan the full table even on the v2.4.1 path. Defensive: v2.4.1 is fast enough without it on the hardware tested, but a future schema change that adds another batched migration would benefit | backend | Planned |
 
 ---
 
