@@ -2104,15 +2104,21 @@ function updateSyncDisplay(type, state, credMap) {
 
     // Backfill Missing button visibility (QIDs only). Hide it once we
     // know nothing is missing — otherwise users keep clicking a no-op.
-    // Show on null (unknown) so the button is available before any
-    // verifying sync has run.
+    // Also hide while a sync is currently running for this data type:
+    // Backfill exists to recover from an interrupted or incomplete sync,
+    // so it's only meaningful when nothing is in flight. Showing it
+    // mid-sync misleads the user into thinking the running sync has a
+    // gap (it doesn't yet — the gap is only knowable after the verify
+    // step at the end of a Full Sync).
+    // Show on null (unknown) when idle so the button is available
+    // before any verifying sync has run.
     if (type === "Qid") {
         const btn = document.getElementById("backfillQidsBtn");
         if (btn) {
             const missing = state.last_missing_count;
             const hasFull = !!state.last_full_sync;
             const knownClean = missing === 0 && hasFull;
-            btn.style.display = knownClean ? "none" : "";
+            btn.style.display = (knownClean || isSyncingNow) ? "none" : "";
             if (typeof missing === "number" && missing > 0) {
                 btn.textContent = "Backfill Missing (" + missing.toLocaleString() + ")";
                 btn.title = missing.toLocaleString() + " QIDs in Qualys are not in your local DB — click to fetch only those.";

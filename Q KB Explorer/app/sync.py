@@ -26,6 +26,8 @@ from app.database import (
     update_sync_state,
     get_mandate_stats,
     get_db,
+    fts5_deferred_for_vulns,
+    fts5_deferred_for_controls,
 )
 
 logger = logging.getLogger(__name__)
@@ -475,8 +477,12 @@ class SyncEngine:
                         continue
                     # Per-record isolation: a single malformed vuln must
                     # not abort the whole sync. Log the QID and move on.
+                    # skip_unchanged=True on Delta short-circuits the
+                    # entire write path when the source dict's hash
+                    # matches what's already stored — turns a
+                    # quiet-day Delta into a near-no-op.
                     try:
-                        upsert_vuln(vuln, conn=conn)
+                        upsert_vuln(vuln, conn=conn, skip_unchanged=not full)
                         total_vulns += 1
                     except Exception as e:
                         logger.warning(
@@ -518,47 +524,56 @@ class SyncEngine:
             # if pre-count chunks overlap)
             populated_ranges = sorted(set(populated_ranges))
 
-            for id_min, id_max in populated_ranges:
-                chunk_params = {
-                    **base_params,
-                    "id_min": str(id_min),
-                    "id_max": str(id_max),
-                }
+            # FTS5 deferred indexing — drop vulns_fts triggers for the
+            # duration of the bulk write, rebuild the inverted index in
+            # one pass at exit. Per-row trigger maintenance was the
+            # dominant Full-Sync cost; the rebuild scales linearly with
+            # parent-table size rather than growing per-insert.
+            with fts5_deferred_for_vulns():
+                for id_min, id_max in populated_ranges:
+                    chunk_params = {
+                        **base_params,
+                        "id_min": str(id_min),
+                        "id_max": str(id_max),
+                    }
 
-                if self.sync_log:
-                    self.sync_log.event("CHUNK_START", {
-                        "id_min": id_min,
-                        "id_max": id_max,
-                    })
-
-                result = self.client.execute_all_pages(
-                    "/api/4.0/fo/knowledge_base/vuln/",
-                    params=chunk_params,
-                    on_page=on_page,
-                    timeout=120,
-                )
-
-                chunk_items = result.get("total_items", 0)
-
-                if result.get("errors"):
-                    all_errors.extend(result["errors"])
                     if self.sync_log:
-                        self.sync_log.event("CHUNK_ERROR", {
+                        self.sync_log.event("CHUNK_START", {
                             "id_min": id_min,
                             "id_max": id_max,
-                            "errors": result["errors"],
                         })
-                    break
 
-                if self.sync_log:
-                    self.sync_log.event("CHUNK_COMPLETE", {
-                        "id_min": id_min,
-                        "id_max": id_max,
-                        "items": chunk_items,
-                        "total_so_far": total_vulns,
-                    })
+                    result = self.client.execute_all_pages(
+                        "/api/4.0/fo/knowledge_base/vuln/",
+                        params=chunk_params,
+                        on_page=on_page,
+                        timeout=120,
+                    )
+
+                    chunk_items = result.get("total_items", 0)
+
+                    if result.get("errors"):
+                        all_errors.extend(result["errors"])
+                        if self.sync_log:
+                            self.sync_log.event("CHUNK_ERROR", {
+                                "id_min": id_min,
+                                "id_max": id_max,
+                                "errors": result["errors"],
+                            })
+                        break
+
+                    if self.sync_log:
+                        self.sync_log.event("CHUNK_COMPLETE", {
+                            "id_min": id_min,
+                            "id_max": id_max,
+                            "items": chunk_items,
+                            "total_so_far": total_vulns,
+                        })
         else:
             # ── Delta sync: single request (typically small) ────────────
+            # Keep FTS5 triggers active — incremental index updates are
+            # cheap on a small change set and avoid the cost of a full
+            # FTS5 rebuild over the whole table.
             result = self.client.execute_all_pages(
                 "/api/4.0/fo/knowledge_base/vuln/",
                 params=base_params,
@@ -782,7 +797,17 @@ class SyncEngine:
             gc.collect()
             return len(controls)
 
-        result = self.client.execute_all_pages("/api/4.0/fo/compliance/control/", params=params, on_page=on_page, timeout=300)
+        # FTS5 deferred indexing on Full Sync — same rationale as the
+        # vulns path: drop the controls_fts triggers, do the bulk write,
+        # rebuild the index in one pass at exit. Delta keeps triggers
+        # active for incremental updates.
+        if full:
+            cids_fts5_ctx = fts5_deferred_for_controls()
+        else:
+            from contextlib import nullcontext as _nullctx
+            cids_fts5_ctx = _nullctx()
+        with cids_fts5_ctx:
+            result = self.client.execute_all_pages("/api/4.0/fo/compliance/control/", params=params, on_page=on_page, timeout=300)
 
         # ── Verification (full sync only) ───────────────────────────────
         missing_ids: list[int] = []

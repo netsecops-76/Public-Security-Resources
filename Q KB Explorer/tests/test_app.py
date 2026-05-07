@@ -314,8 +314,14 @@ def test_backfill_threat_columns_tolerates_malformed_correlation_json():
 
     with get_db() as conn:
         for qid, corr in ((55001, bad_explt), (55002, bad_mw), (55003, good)):
+            # Reset threat_backfill_done=0 so these rows look like legacy
+            # rows that haven't been processed yet — upsert_vuln set done=1
+            # directly. Without this reset the streaming backfill skips
+            # them (correctly — done rows aren't candidates) and the test
+            # is no longer exercising the function's malformed-JSON path.
             conn.execute(
-                "UPDATE vulns SET correlation_json = ?, threat_intelligence_json = ? WHERE qid = ?",
+                "UPDATE vulns SET correlation_json = ?, threat_intelligence_json = ?, "
+                "threat_backfill_done = 0 WHERE qid = ?",
                 (corr, ti, qid),
             )
         # Must not raise.
@@ -327,6 +333,271 @@ def test_backfill_threat_columns_tolerates_malformed_correlation_json():
     assert get_vuln(55003)["exploit_count"] == 2
     # Threat-intel flag still backfills on the bad rows.
     assert get_vuln(55001)["threat_active_attacks"] == 1
+
+
+def test_upsert_vuln_skip_unchanged_short_circuits_on_identical_input():
+    # v2.4 Path A — Delta optimization. When skip_unchanged=True (the
+    # mode Delta sync passes), identical input must return early without
+    # touching parent or child tables, and modified input must run the
+    # full upsert path. Pin the contract.
+    from app.database import upsert_vuln, get_db
+
+    payload = {
+        "QID": "70010", "TITLE": "first", "SEVERITY_LEVEL": "4",
+        "CVE_LIST": {"CVE": [{"ID": "CVE-X", "URL": "u"}]},
+    }
+    upsert_vuln(payload, skip_unchanged=False)
+
+    # Capture the row state including the stored source_hash.
+    with get_db() as conn:
+        before = dict(conn.execute(
+            "SELECT title, source_hash FROM vulns WHERE qid=70010"
+        ).fetchone())
+        cves_before = sorted(r["cve_id"] for r in conn.execute(
+            "SELECT cve_id FROM vuln_cves WHERE qid=70010").fetchall())
+    assert before["source_hash"], "source_hash must be populated on insert"
+
+    # Identical payload + skip_unchanged=True → no-op.
+    upsert_vuln(payload, skip_unchanged=True)
+    with get_db() as conn:
+        after = dict(conn.execute(
+            "SELECT title, source_hash FROM vulns WHERE qid=70010"
+        ).fetchone())
+        cves_after = sorted(r["cve_id"] for r in conn.execute(
+            "SELECT cve_id FROM vuln_cves WHERE qid=70010").fetchall())
+    assert before == after
+    assert cves_before == cves_after
+
+    # Modified payload + skip_unchanged=True → full upsert runs.
+    modified = {
+        "QID": "70010", "TITLE": "second", "SEVERITY_LEVEL": "4",
+        "CVE_LIST": {"CVE": [{"ID": "CVE-X", "URL": "u"}, {"ID": "CVE-Y", "URL": "u2"}]},
+    }
+    upsert_vuln(modified, skip_unchanged=True)
+    with get_db() as conn:
+        post = dict(conn.execute(
+            "SELECT title, source_hash FROM vulns WHERE qid=70010"
+        ).fetchone())
+        cves_post = sorted(r["cve_id"] for r in conn.execute(
+            "SELECT cve_id FROM vuln_cves WHERE qid=70010").fetchall())
+    assert post["title"] == "second"
+    assert post["source_hash"] != before["source_hash"]
+    assert cves_post == ["CVE-X", "CVE-Y"]
+
+
+def test_fts5_deferred_for_vulns_rebuilds_index_and_reinstates_triggers():
+    # v2.4 Path A — Full Sync optimization. Inside the context manager,
+    # vulns_fts triggers must be dropped (so per-row maintenance is
+    # skipped). At exit, the FTS5 'rebuild' command must repopulate the
+    # index from the parent table, and the triggers must be back in
+    # place so subsequent incremental upserts work normally.
+    from app.database import upsert_vuln, fts5_deferred_for_vulns, get_db
+
+    with get_db() as conn:
+        with fts5_deferred_for_vulns(conn):
+            # Inside the context: triggers should be gone.
+            triggers = [r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='trigger' "
+                "AND name LIKE 'vulns_a%' ORDER BY name").fetchall()]
+            assert triggers == [], f"triggers should be dropped inside context, got {triggers}"
+            upsert_vuln({"QID": "70011", "TITLE": "deferred-index alpha", "SEVERITY_LEVEL": "3"}, conn=conn)
+            upsert_vuln({"QID": "70012", "TITLE": "deferred-index beta", "SEVERITY_LEVEL": "2"}, conn=conn)
+
+    # After exit: triggers reinstated, FTS5 index repopulated.
+    with get_db() as conn:
+        triggers = [r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='trigger' "
+            "AND name LIKE 'vulns_a%' ORDER BY name").fetchall()]
+        # Should match the schema's three: ai (insert), ad (delete), au (update).
+        assert triggers == ["vulns_ad", "vulns_ai", "vulns_au"]
+        # FTS5 search must find the rows added inside the context.
+        match_alpha = [r[0] for r in conn.execute(
+            "SELECT qid FROM vulns_fts WHERE vulns_fts MATCH 'alpha'").fetchall()]
+        match_beta = [r[0] for r in conn.execute(
+            "SELECT qid FROM vulns_fts WHERE vulns_fts MATCH 'beta'").fetchall()]
+        assert match_alpha == [70011], f"alpha match: {match_alpha}"
+        assert match_beta == [70012], f"beta match: {match_beta}"
+
+    # Verify post-rebuild triggers fire on subsequent normal upserts.
+    upsert_vuln({"QID": "70013", "TITLE": "post-rebuild gamma", "SEVERITY_LEVEL": "3"})
+    with get_db() as conn:
+        match_gamma = [r[0] for r in conn.execute(
+            "SELECT qid FROM vulns_fts WHERE vulns_fts MATCH 'gamma'").fetchall()]
+    assert match_gamma == [70013]
+
+
+def test_threat_backfill_done_marker_prevents_re_walk():
+    # v2.4 added the threat_backfill_done marker so init_db doesn't
+    # re-walk legacy rows on every container start. Test pins the
+    # contract: rows that are already classified (or have nothing to
+    # classify) must end up done=1, the streaming backfill must
+    # process the rest, and a re-run must be a no-op.
+    import json as _json
+    import sqlite3 as _sql
+    from app.database import init_db, upsert_vuln, get_db, _backfill_threat_columns
+
+    # Direct insert simulating pre-v2.4 rows: bypass upsert_vuln so we can
+    # control threat_backfill_done explicitly.
+    with get_db() as conn:
+        conn.executemany(
+            """INSERT OR REPLACE INTO vulns (
+                qid, title, severity_level, threat_intelligence_json,
+                threat_active_attacks, threat_exploit_public, threat_easy_exploit,
+                threat_malware, threat_rce, threat_priv_escalation, threat_cisa_kev,
+                exploit_count, malware_count, threat_backfill_done
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            [
+                # Already classified — flags set, must end up done=1
+                (80001, "classified", 4,
+                 _json.dumps({"THREAT_INTEL": [{"#text": "Active_Attacks"}]}),
+                 1, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+                # Legacy false-positive — JSON but no recognized tags, flags=0
+                (80002, "no-tags", 3, _json.dumps({"THREAT_INTEL": []}),
+                 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+                # Genuinely needs backfill — JSON with tags, flags still 0
+                (80003, "unprocessed", 5,
+                 _json.dumps({"THREAT_INTEL": [
+                     {"#text": "Active_Attacks"},
+                     {"#text": "Cisa_Known_Exploited_Vulns"},
+                 ]}),
+                 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+                # No JSON — nothing to backfill, must end up done=1
+                (80004, "no-json", 2, None,
+                 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+            ],
+        )
+
+    # Run init_db (which will detect needed backfill and run it).
+    init_db()
+
+    with get_db() as conn:
+        rows = {r["qid"]: dict(r) for r in conn.execute(
+            "SELECT qid, threat_active_attacks, threat_cisa_kev, threat_backfill_done "
+            "FROM vulns WHERE qid IN (80001, 80002, 80003, 80004)"
+        ).fetchall()}
+
+    assert rows[80001]["threat_active_attacks"] == 1
+    assert rows[80001]["threat_backfill_done"] == 1
+    assert rows[80002]["threat_active_attacks"] == 0
+    assert rows[80002]["threat_backfill_done"] == 1
+    assert rows[80003]["threat_active_attacks"] == 1
+    assert rows[80003]["threat_cisa_kev"] == 1
+    assert rows[80003]["threat_backfill_done"] == 1
+    # The no-JSON row (80004) doesn't need to flip done=1 — the detection
+    # query filters on threat_intelligence_json IS NOT NULL, so a no-JSON
+    # row is never a backfill candidate regardless of the marker. The
+    # belt-and-suspenders UPDATE only runs on column-add (ALTER TABLE),
+    # which doesn't fire here because the column already exists in the
+    # schema executescript ran when init_db booted the test client.
+    # Either value is correct; just assert the row exists with no flags.
+    assert rows[80004]["threat_active_attacks"] == 0
+    assert rows[80004]["threat_cisa_kev"] == 0
+
+    # Re-running init_db must find zero candidates and do nothing.
+    # We can't observe "did nothing" directly, but we can verify the
+    # detection query returns 0.
+    with get_db() as conn:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM vulns "
+            "WHERE threat_intelligence_json IS NOT NULL "
+            "AND threat_intelligence_json != 'null' "
+            "AND threat_backfill_done = 0"
+        ).fetchone()[0]
+    assert n == 0
+
+    # Fresh upsert_vuln must directly mark done=1 — backfill never sees
+    # rows from the live ingest path.
+    upsert_vuln({"QID": "80005", "TITLE": "fresh", "SEVERITY_LEVEL": "3",
+                 "THREAT_INTELLIGENCE": {"THREAT_INTEL": [{"#text": "Active_Attacks"}]}})
+    with get_db() as conn:
+        done = conn.execute(
+            "SELECT threat_backfill_done FROM vulns WHERE qid=?", (80005,)
+        ).fetchone()[0]
+    assert done == 1
+
+
+def test_upsert_vuln_executemany_child_tables_parity():
+    # v2.4 swapped the per-row execute() loop in upsert_vuln's child-table
+    # writes (CVEs / bugtraqs / vendor refs / RTI tags / supported modules)
+    # for executemany. This test pins the externally-observable shape so a
+    # future tweak doesn't regress the contract:
+    #   1) every dict-shaped child entry lands as exactly one row
+    #   2) non-dict entries (bare strings, numbers) are filtered out for
+    #      list/dict-typed children, and the supported-modules path
+    #      preserves its tolerant string/dict/numeric handling
+    #   3) DELETE+executemany is idempotent — re-upserting the same payload
+    #      leaves the DB in the same state, no duplicates
+    #   4) a QID with no child data produces zero rows in every child table
+    from app.database import upsert_vuln, get_db
+
+    upsert_vuln({
+        "QID": "70001",
+        "TITLE": "executemany parity probe",
+        "SEVERITY_LEVEL": "4",
+        "CVE_LIST": {"CVE": [
+            {"ID": "CVE-2024-A", "URL": "https://example/A"},
+            {"ID": "CVE-2024-B", "URL": "https://example/B"},
+            "bare-string-not-a-dict",  # filtered out
+        ]},
+        "BUGTRAQ_LIST": {"BUGTRAQ": [{"ID": "111", "URL": "u1"}, {"ID": "222", "URL": "u2"}]},
+        "VENDOR_REFERENCE_LIST": {"VENDOR_REFERENCE": [{"ID": "MSKB-1", "URL": "kb1"}]},
+        "THREAT_INTELLIGENCE": {"THREAT_INTEL": [
+            {"#text": "Active_Attacks"},
+            {"#text": ""},     # empty text — filtered out
+            {},                # empty dict — filtered out
+        ]},
+        "CORRELATION": {"EXPLOITS": {"EXPLT_SRC": {"EXPLT_LIST": {"EXPLT": [{"REF": "EDB-1"}]}}}},
+        "SUPPORTED_MODULES": {"SUPPORTED_MODULE": ["scanner", {"#text": "agent"}, "", 42]},
+    })
+
+    with get_db() as conn:
+        cves = sorted(r["cve_id"] for r in conn.execute(
+            "SELECT cve_id FROM vuln_cves WHERE qid=?", (70001,)).fetchall())
+        bts = sorted(r["bugtraq_id"] for r in conn.execute(
+            "SELECT bugtraq_id FROM vuln_bugtraqs WHERE qid=?", (70001,)).fetchall())
+        vrs = sorted(r["vendor_ref_id"] for r in conn.execute(
+            "SELECT vendor_ref_id FROM vuln_vendor_refs WHERE qid=?", (70001,)).fetchall())
+        rti = sorted(r["rti_tag"] for r in conn.execute(
+            "SELECT rti_tag FROM vuln_rti WHERE qid=?", (70001,)).fetchall())
+        sm = sorted(r["module_name"] for r in conn.execute(
+            "SELECT module_name FROM vuln_supported_modules WHERE qid=?", (70001,)).fetchall())
+
+    assert cves == ["CVE-2024-A", "CVE-2024-B"]
+    assert bts == ["111", "222"]
+    assert vrs == ["MSKB-1"]
+    # Active_Attacks comes from THREAT_INTEL; has_exploit comes from CORRELATION.
+    # Empty / {} dict items are correctly filtered.
+    assert rti == ["Active_Attacks", "has_exploit"]
+    # Supported modules tolerates strings, dict {#text}, and stringified numbers.
+    assert sm == ["42", "agent", "scanner"]
+
+    # Idempotency: re-upsert with same payload, child rows must equal first round.
+    upsert_vuln({
+        "QID": "70001",
+        "TITLE": "executemany parity probe",
+        "SEVERITY_LEVEL": "4",
+        "CVE_LIST": {"CVE": [
+            {"ID": "CVE-2024-A", "URL": "https://example/A"},
+            {"ID": "CVE-2024-B", "URL": "https://example/B"},
+        ]},
+        "CORRELATION": {"EXPLOITS": {"EXPLT_SRC": {"EXPLT_LIST": {"EXPLT": [{"REF": "EDB-1"}]}}}},
+    })
+    with get_db() as conn:
+        cves2 = sorted(r["cve_id"] for r in conn.execute(
+            "SELECT cve_id FROM vuln_cves WHERE qid=?", (70001,)).fetchall())
+        rti2 = sorted(r["rti_tag"] for r in conn.execute(
+            "SELECT rti_tag FROM vuln_rti WHERE qid=?", (70001,)).fetchall())
+    assert cves2 == ["CVE-2024-A", "CVE-2024-B"]
+    assert rti2 == ["has_exploit"]
+
+    # No-child QID — every child table empty, no executemany invocations triggered.
+    upsert_vuln({"QID": "70002", "TITLE": "no children", "SEVERITY_LEVEL": "2"})
+    with get_db() as conn:
+        for table in ("vuln_cves", "vuln_bugtraqs", "vuln_vendor_refs",
+                      "vuln_rti", "vuln_supported_modules"):
+            n = conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE qid=?", (70002,)).fetchone()[0]
+            assert n == 0, f"{table} had {n} rows for child-less QID"
 
 
 def test_upsert_vuln_handles_correlation_shape_variations():

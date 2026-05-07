@@ -236,6 +236,73 @@ User selects tags on Browse tab → clicks "Migrate to env…"
 - **Password comparison:** `secrets.compare_digest()` prevents timing attacks
 - **TLS:** Auto-detected from `/app/certs/` directory (cert.pem + key.pem); sets `secure=True` on cookie
 
+## Performance Characteristics
+
+Q KB Explorer's hot path is sync ingest. CPU-side cost per QID is dominated
+by Python work (XML→dict via xmltodict, `bleach.sanitize_html` on the three
+content fields, `json.dumps` of nested blocks) plus per-record SQL on six
+tables (parent + five child link tables). I/O cost is dominated by SQLite
+WAL fsyncs at the page boundary.
+
+Both numbers move with hardware. Two reference environments:
+
+### Reference environments
+
+| Property | High-end dev (Apple Silicon Mac) | Low-end ops VM (Hyper-V on Azure) |
+|----------|----------------------------------|------------------------------------|
+| OS | macOS, Docker Desktop | RHEL 9.4, Docker 29.x, overlay2 |
+| CPU | M-series, 8+ performance cores | Intel Xeon E5-2673 v4 @ 2.30 GHz, **2 vCPUs (1 core × 2 HT ≈ 1.3 useful cores)** |
+| RAM | 16 GiB+ host, ~8 GiB available to Docker | 7.5 GiB host, **no swap**, ~4.2 GiB available |
+| Disk | NVMe SSD, local | Hyper-V VHD (SSD/HDD class depends on Azure tier), `/var` LVM, single-VHD path |
+| Virtualization | None (host-native containers) | Hyper-V (`systemd-detect-virt: microsoft`) |
+| Typical load average during sync | < 2 | ~2.3 sustained (CPU-saturated) |
+
+### Reference timings (full QID sync, ~209K records, single worker)
+
+| Environment | Wall time | Notes |
+|-------------|-----------|-------|
+| High-end dev (Mac M-series, NVMe) — v2.1.0 documented | **~9 minutes** | from v2.1.0 CHANGELOG; hardware specifics not preserved. Treat as historical. |
+| High-end dev (Apple Silicon Mac, 14 vCPU / 16 GiB Docker, NVMe) — early v2.4 (executemany only) | **1 h 21 min 13 s** | 208,760 QIDs, `VERIFY_OK`. Throughput collapsed from ~120K rec/min in early chunks to ~1,600 rec/min in the final chunk — same DB-growth curve as the RHEL run. |
+| Same Mac — **v2.4 bundled (executemany + bleach Cleaner reuse + FTS5 deferred + source-hash skip)** | **8 min 5 s** | 208,765 QIDs, `VERIFY_OK`, zero errors. **10× faster than executemany-only on the same hardware**, faster than the v2.1.0 historical baseline. The slowdown curve is gone — per-chunk write times stayed flat (~2–5 s for 5K-record chunks) across the entire run. |
+| Low-end ops VM (RHEL 9.4 on Hyper-V/Azure, 2 vCPU) — pre-v2.4 | **3 h 34 min 46 s** | 208,760 QIDs, `VERIFY_OK`, zero errors. Throughput collapsed from ~23K rec/min in the first ~50K records to ~580 rec/min in the final chunks. |
+| Low-end ops VM — post-v2.4 bundled | TBD | will update after the v2.4 deploy on the same VM. Expectation based on the Mac speedup: order-of-magnitude reduction. |
+
+The low-end VM's per-chunk timing curve (pre-v2.4) shows the cost
+profile clearly: empty DB / no FTS5 fragmentation / minimal page
+cache pressure runs near hardware limits at the start, then per-record
+work climbs as the WAL grows, the FTS5 index needs more I/O per
+insert, and bleach + json.dumps + per-record SQL roundtrips compound.
+
+| Chunk | Items | Ingest time | Throughput |
+|-------|-------|-------------|------------|
+| 10k–20k (early) | 4,991 | 13 s | ~23,000 rec/min |
+| 110k–120k | 5,262 | 31 s | ~10,200 rec/min |
+| 160k–170k | 9,286 | 92 s | ~6,000 rec/min |
+| 280k–290k | 8,573 | 487 s | ~1,060 rec/min |
+| 510k–520k | 9,163 | 746 s | ~740 rec/min |
+| 990k–999k (final) | 9,979 | 1,039 s | ~580 rec/min |
+
+The ~20–30× wall-time gap between the two environments is consistent with
+the hardware delta and is dominated by per-record CPU work plus single-VHD
+fsync latency. The executemany change in v2.4 cuts the SQLite roundtrip
+component for child-table writes; it does not change the bleach / xmltodict
+cost. Hardware-side levers that further help on the low-end host:
+
+- **Bump vCPU count** (4 vCPU helps more than 2× because the upsert loop is
+  single-threaded but sync HTTP, FTS5 maintenance, and OS overhead compete
+  for the same core).
+- **Premium SSD** — single biggest IOPS lever; SQLite WAL fsync per commit
+  is a tight loop and HDD-class disks (~80 IOPS) are punishing.
+- **Add swap (4–8 GiB)** so the kernel degrades smoothly under transient
+  memory pressure instead of OOM-killing Gunicorn mid-sync.
+
+Code-side levers tracked but not yet implemented:
+
+- Skip child-table `DELETE`+rewrite when the source payload hash is
+  unchanged. Doesn't help Full Sync, but turns Delta near-free.
+- Reduce `bleach.sanitize_html` cost via a pre-compiled sanitizer reused
+  across calls (currently rebuilt per record).
+
 ## External Dependencies
 
 | Dependency     | Purpose                    | Risk Level | Notes                          |

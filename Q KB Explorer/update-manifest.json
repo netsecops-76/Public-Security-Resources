@@ -1,7 +1,7 @@
 {
-  "version": "2.3.0",
+  "version": "2.4.0",
   "min_updater_version": 1,
-  "notes": "v2.3.0 — Automatic Updates schedule (configurable day/time, runs apply_update on cron). Apply Update progress modal with auto-reload on server down→up transition. Vault session minted on credential save (no re-auth modal after first save). PM Patches delta sync uses correct QQL (modifiedDate>); falls back to full-list ingest if QQL is rejected. Auto-update toggle no longer 404s. Includes the v2.2 sync robustness, UX, and updater-restart fixes.",
+  "notes": "v2.4.0 — Sync ingest performance pass: child-table writes via executemany; bleach Cleaner pre-compiled and reused instead of rebuilt per record; FTS5 deferred indexing on Full Sync (drop triggers, bulk write, rebuild once); SHA-256 source_hash on vulns lets Delta sync short-circuit unchanged QIDs entirely. Init_db hardening: threat_backfill_done marker stops re-walking 40K+ legacy rows on every container start; backfill streams via fetchmany() with per-batch commits and progress logging. Backfill Missing button hidden during active sync. Reference-environment performance section added to docs/ARCHITECTURE.md.",
   "steps": [
     {
       "action": "copy_file",

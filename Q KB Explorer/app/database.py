@@ -8,6 +8,7 @@ WAL mode for concurrent reads during sync operations.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -30,12 +31,23 @@ _SAFE_TAGS = [
 ]
 _SAFE_ATTRS = {"a": ["href", "target"], "font": ["color", "size"]}
 
+# Pre-compiled bleach Cleaner — built once at import, reused on every
+# call. The previous implementation called `bleach.clean()` per record,
+# which rebuilt the sanitizer (tag/attribute filters, html5lib parser
+# config) on every call. With three sanitize calls per QID and 200K+
+# QIDs in a Full Sync, that was 600K+ Cleaner allocations of pure
+# overhead. `Cleaner` instances are documented as reusable and
+# thread-safe for `clean()`.
+_BLEACH_CLEANER = bleach.Cleaner(
+    tags=_SAFE_TAGS, attributes=_SAFE_ATTRS, strip=True,
+)
+
 
 def _sanitize_html(value: str | None) -> str | None:
     """Strip unsafe HTML from Qualys KB fields while preserving formatting."""
     if not value:
         return value
-    return bleach.clean(value, tags=_SAFE_TAGS, attributes=_SAFE_ATTRS, strip=True)
+    return _BLEACH_CLEANER.clean(value)
 
 logger = logging.getLogger(__name__)
 
@@ -213,17 +225,61 @@ def init_db():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_vulns_threat_cisa ON vulns(threat_cisa_kev)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_vulns_exploit_public ON vulns(threat_exploit_public)")
 
-        # One-time backfill: compute threat flags from stored JSON for
-        # QIDs synced before these columns existed.
+        # threat_backfill_done — one-time marker added in v2.4 to stop
+        # init_db from re-walking 40K+ rows on every container start
+        # just because they have a threat_intelligence_json blob with no
+        # recognized tags inside. Migration:
+        #   1) ALTER TABLE adds the column on legacy DBs
+        #   2) Mark rows already classified (any flag column non-zero,
+        #      or no JSON to backfill from) as done. After this, only
+        #      rows that genuinely need reclassification show up to the
+        #      backfill detection query.
+        #   3) Run the streaming backfill. New rows get done=1 directly
+        #      from upsert_vuln, so this only ever loads work caused by
+        #      a schema upgrade — never the steady-state cost.
+        # v2.4 source_hash — see schema comment. Add on legacy DBs.
+        if "source_hash" not in vulns_cols:
+            conn.execute("ALTER TABLE vulns ADD COLUMN source_hash TEXT")
+
+        if "threat_backfill_done" not in vulns_cols:
+            conn.execute(
+                "ALTER TABLE vulns ADD COLUMN threat_backfill_done "
+                "INTEGER NOT NULL DEFAULT 0"
+            )
+            # Belt-and-suspenders: any row whose flag columns are
+            # already populated (or has no JSON to derive from) does
+            # not need backfill. Mark them so we don't waste time.
+            conn.execute(
+                """UPDATE vulns SET threat_backfill_done = 1 WHERE
+                       threat_active_attacks > 0
+                    OR threat_exploit_public > 0
+                    OR threat_easy_exploit > 0
+                    OR threat_malware > 0
+                    OR threat_rce > 0
+                    OR threat_priv_escalation > 0
+                    OR threat_cisa_kev > 0
+                    OR exploit_count > 0
+                    OR malware_count > 0
+                    OR threat_intelligence_json IS NULL
+                    OR threat_intelligence_json = 'null'
+                """
+            )
+            conn.commit()
+
+        # Now run streaming backfill for any remaining un-classified
+        # rows. Only counts rows that are actually candidates — no JSON
+        # → no work, marker=1 → no work, flags already set → no work.
         needs_backfill = conn.execute(
             "SELECT COUNT(*) FROM vulns "
             "WHERE threat_intelligence_json IS NOT NULL "
             "AND threat_intelligence_json != 'null' "
-            "AND threat_active_attacks = 0 AND threat_exploit_public = 0 "
-            "AND threat_cisa_kev = 0 AND exploit_count = 0"
+            "AND threat_backfill_done = 0"
         ).fetchone()[0]
         if needs_backfill > 0:
-            _backfill_threat_columns(conn)
+            logger.info("[Init] Threat-column backfill: %d rows queued",
+                        needs_backfill)
+            _backfill_threat_columns(conn, total=needs_backfill)
+            logger.info("[Init] Threat-column backfill: complete")
 
         # Index is created here (not in _SCHEMA_SQL) because executescript
         # runs the whole schema in order — putting CREATE INDEX next to the
@@ -412,7 +468,22 @@ CREATE TABLE IF NOT EXISTS vulns (
     discovery_auth_types TEXT,
     correlation_json   TEXT,
     threat_intelligence_json TEXT,
-    software_list_json TEXT
+    software_list_json TEXT,
+    -- One-time marker: set to 1 once the row's threat flag columns have
+    -- been derived from the JSON (either at upsert time, or by the
+    -- _backfill_threat_columns migration for legacy rows). Detection
+    -- query in init_db joins on this so rows that legitimately have no
+    -- recognized threat tags don't get re-walked on every container
+    -- start. Without this column, init_db would re-process tens of
+    -- thousands of rows on every restart for no gain.
+    threat_backfill_done INTEGER NOT NULL DEFAULT 0,
+    -- v2.4: SHA-256 of the canonicalized source dict from upsert_vuln,
+    -- used by Delta sync to skip the entire write path when nothing
+    -- about a QID has changed since the last sync. Compares before any
+    -- INSERT OR REPLACE / child-table DELETE+INSERT / FTS5 maintenance.
+    -- NULL on legacy rows; the next sync that touches a row populates
+    -- it.
+    source_hash TEXT
 );
 -- Sync universe — every id Qualys reported during the most recent
 -- pre-count pass for a given data type ('qids', 'cids', 'policies').
@@ -904,72 +975,120 @@ INSERT OR IGNORE INTO sync_state (data_type) VALUES ('pm_patches');
 """
 
 
-def _backfill_threat_columns(conn):
+_BACKFILL_BATCH_SIZE = 500
+
+
+def _backfill_threat_columns(conn, total: int | None = None):
     """One-time backfill: recompute threat flags from stored JSON.
 
-    Called during init_db when QIDs have threat_intelligence_json but
-    all threat flag columns are still 0 (synced before columns existed).
+    Called during init_db for legacy rows that have threat_intelligence_json
+    populated but threat_backfill_done = 0. New rows get done=1 directly
+    from upsert_vuln, so this only runs after a schema upgrade — never as
+    a steady-state cost.
+
+    v2.4 hardening:
+    - Streams rows in batches of 500 with cursor.fetchmany() instead of
+      loading every row into Python at once. The pre-v2.4 fetchall() on a
+      90K-vuln DB allocated hundreds of MB of Python heap (each row carries
+      its threat_intelligence_json / correlation_json blobs) and on
+      memory-constrained hosts ended up thrashing the allocator before
+      doing any DB work — symptom: WAL file mtime never advanced and the
+      container hung in the entrypoint pre-flight import for 10+ minutes.
+    - Commits each batch (and sets threat_backfill_done=1 on processed
+      rows) so progress is visible in the WAL, durable across kills, and
+      the next start picks up where the last left off instead of redoing
+      finished work.
+    - Logs every batch so init_db isn't silent during a multi-minute
+      catch-up after a major schema change.
     """
-    rows = conn.execute(
+    cur = conn.execute(
         "SELECT qid, threat_intelligence_json, correlation_json FROM vulns "
         "WHERE threat_intelligence_json IS NOT NULL "
-        "AND threat_intelligence_json != 'null'"
-    ).fetchall()
-    for row in rows:
-        # Best-effort recompute. A malformed blob on any single row must
-        # not be able to abort init_db() and crashloop the container.
+        "AND threat_intelligence_json != 'null' "
+        "AND threat_backfill_done = 0"
+    )
+    processed = 0
+    while True:
+        batch = cur.fetchmany(_BACKFILL_BATCH_SIZE)
+        if not batch:
+            break
+        completed_qids: list[int] = []
+        for row in batch:
+            qid = row[0]
+            try:
+                try:
+                    ti = json.loads(row[1]) if row[1] else {}
+                except (json.JSONDecodeError, TypeError):
+                    ti = {}
+                try:
+                    corr = json.loads(row[2]) if row[2] else {}
+                except (json.JSONDecodeError, TypeError):
+                    corr = {}
+
+                ti_tags_raw = ti.get("THREAT_INTEL") or []
+                if isinstance(ti_tags_raw, dict):
+                    ti_tags_raw = [ti_tags_raw]
+                ti_tags: set[str] = set()
+                for t in ti_tags_raw:
+                    if isinstance(t, dict):
+                        ti_tags.add(t.get("#text", ""))
+                    elif isinstance(t, str):
+                        ti_tags.add(t)
+
+                exploit_count, malware_count = _count_correlation_exploits_and_malware(corr)
+
+                conn.execute(
+                    """UPDATE vulns SET
+                        threat_active_attacks = ?,
+                        threat_exploit_public = ?,
+                        threat_easy_exploit = ?,
+                        threat_malware = ?,
+                        threat_rce = ?,
+                        threat_priv_escalation = ?,
+                        threat_cisa_kev = ?,
+                        exploit_count = ?,
+                        malware_count = ?,
+                        threat_backfill_done = 1
+                    WHERE qid = ?""",
+                    (
+                        1 if "Active_Attacks" in ti_tags else 0,
+                        1 if "Exploit_Public" in ti_tags else 0,
+                        1 if "Easy_Exploit" in ti_tags else 0,
+                        1 if "Malware" in ti_tags else 0,
+                        1 if "Remote_Code_Execution" in ti_tags else 0,
+                        1 if "Privilege_Escalation" in ti_tags else 0,
+                        1 if "Cisa_Known_Exploited_Vulns" in ti_tags else 0,
+                        exploit_count,
+                        malware_count,
+                        qid,
+                    ),
+                )
+                completed_qids.append(qid)
+            except Exception as e:
+                # Mark malformed rows done anyway so we don't re-walk them
+                # forever. They keep their existing flag values; a future
+                # full sync will overwrite.
+                logger.warning(
+                    "threat-column backfill: marking QID %s done despite error (%s: %s)",
+                    qid, type(e).__name__, e,
+                )
+                try:
+                    conn.execute(
+                        "UPDATE vulns SET threat_backfill_done = 1 WHERE qid = ?",
+                        (qid,),
+                    )
+                except Exception:
+                    pass
+        # Commit per batch so progress is durable.
         try:
-            try:
-                ti = json.loads(row[1]) if row[1] else {}
-            except (json.JSONDecodeError, TypeError):
-                ti = {}
-            try:
-                corr = json.loads(row[2]) if row[2] else {}
-            except (json.JSONDecodeError, TypeError):
-                corr = {}
-
-            ti_tags_raw = ti.get("THREAT_INTEL") or []
-            if isinstance(ti_tags_raw, dict):
-                ti_tags_raw = [ti_tags_raw]
-            ti_tags = set()
-            for t in ti_tags_raw:
-                if isinstance(t, dict):
-                    ti_tags.add(t.get("#text", ""))
-                elif isinstance(t, str):
-                    ti_tags.add(t)
-
-            exploit_count, malware_count = _count_correlation_exploits_and_malware(corr)
-
-            conn.execute(
-                """UPDATE vulns SET
-                    threat_active_attacks = ?,
-                    threat_exploit_public = ?,
-                    threat_easy_exploit = ?,
-                    threat_malware = ?,
-                    threat_rce = ?,
-                    threat_priv_escalation = ?,
-                    threat_cisa_kev = ?,
-                    exploit_count = ?,
-                    malware_count = ?
-                WHERE qid = ?""",
-                (
-                    1 if "Active_Attacks" in ti_tags else 0,
-                    1 if "Exploit_Public" in ti_tags else 0,
-                    1 if "Easy_Exploit" in ti_tags else 0,
-                    1 if "Malware" in ti_tags else 0,
-                    1 if "Remote_Code_Execution" in ti_tags else 0,
-                    1 if "Privilege_Escalation" in ti_tags else 0,
-                    1 if "Cisa_Known_Exploited_Vulns" in ti_tags else 0,
-                    exploit_count,
-                    malware_count,
-                    row[0],
-                ),
-            )
-        except Exception as e:
-            logger.warning(
-                "threat-column backfill: skipping QID %s (%s: %s)",
-                row[0], type(e).__name__, e,
-            )
+            conn.commit()
+        except Exception:
+            pass
+        processed += len(batch)
+        if total:
+            logger.info("[Init] Threat-column backfill: %d/%d done", processed, total)
+        else:
+            logger.info("[Init] Threat-column backfill: %d done", processed)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1333,6 +1452,108 @@ def _ensure_list(val):
     return [val]
 
 
+# ───────────────────────────────────────────────────────────────────────
+# FTS5 deferred indexing — Full-Sync optimization (v2.4)
+#
+# vulns_fts / controls_fts are external-content FTS5 tables backed by
+# triggers on the parent table. With ~209K QIDs in a Full Sync, the
+# per-row trigger maintenance becomes the dominant write cost: each
+# INSERT OR REPLACE fires the AFTER-UPDATE trigger which does a delete +
+# reinsert into the FTS5 inverted index, and that index B-tree depth
+# grows with the data so each operation gets slightly more expensive
+# than the last (the slowdown curve users observe).
+#
+# `fts5_deferred_for_vulns(conn)` and `fts5_deferred_for_controls(conn)`
+# drop those triggers for the duration of the bulk insert, then issue a
+# single FTS5 'rebuild' command at the end. The rebuild reads the
+# parent table once and writes the FTS5 segments in optimal order — far
+# cheaper than 209K incremental updates. Triggers are recreated inside
+# the same transaction so the next normal upsert path has them in
+# place.
+#
+# Idempotent: if triggers don't exist (e.g. after this manager has
+# already run and the previous rebuild's transaction is open), DROP IF
+# EXISTS makes it a no-op. CREATE IF NOT EXISTS likewise.
+# ───────────────────────────────────────────────────────────────────────
+
+import contextlib as _contextlib
+
+_VULNS_FTS_TRIGGERS = """
+CREATE TRIGGER IF NOT EXISTS vulns_ai AFTER INSERT ON vulns BEGIN
+    INSERT INTO vulns_fts(rowid, qid, title, category, diagnosis, consequence, solution)
+    VALUES (new.qid, new.qid, new.title, new.category, new.diagnosis, new.consequence, new.solution);
+END;
+CREATE TRIGGER IF NOT EXISTS vulns_ad AFTER DELETE ON vulns BEGIN
+    INSERT INTO vulns_fts(vulns_fts, rowid, qid, title, category, diagnosis, consequence, solution)
+    VALUES ('delete', old.qid, old.qid, old.title, old.category, old.diagnosis, old.consequence, old.solution);
+END;
+CREATE TRIGGER IF NOT EXISTS vulns_au AFTER UPDATE ON vulns BEGIN
+    INSERT INTO vulns_fts(vulns_fts, rowid, qid, title, category, diagnosis, consequence, solution)
+    VALUES ('delete', old.qid, old.qid, old.title, old.category, old.diagnosis, old.consequence, old.solution);
+    INSERT INTO vulns_fts(rowid, qid, title, category, diagnosis, consequence, solution)
+    VALUES (new.qid, new.qid, new.title, new.category, new.diagnosis, new.consequence, new.solution);
+END;
+"""
+
+_CONTROLS_FTS_TRIGGERS = """
+CREATE TRIGGER IF NOT EXISTS controls_ai AFTER INSERT ON controls BEGIN
+    INSERT INTO controls_fts(rowid, cid, statement, category, sub_category, comment)
+    VALUES (new.cid, new.cid, new.statement, new.category, new.sub_category, new.comment);
+END;
+CREATE TRIGGER IF NOT EXISTS controls_ad AFTER DELETE ON controls BEGIN
+    INSERT INTO controls_fts(controls_fts, rowid, cid, statement, category, sub_category, comment)
+    VALUES ('delete', old.cid, old.cid, old.statement, old.category, old.sub_category, old.comment);
+END;
+CREATE TRIGGER IF NOT EXISTS controls_au AFTER UPDATE ON controls BEGIN
+    INSERT INTO controls_fts(controls_fts, rowid, cid, statement, category, sub_category, comment)
+    VALUES ('delete', old.cid, old.cid, old.statement, old.category, old.sub_category, old.comment);
+    INSERT INTO controls_fts(rowid, cid, statement, category, sub_category, comment)
+    VALUES (new.cid, new.cid, new.statement, new.category, new.sub_category, new.comment);
+END;
+"""
+
+
+@_contextlib.contextmanager
+def fts5_deferred_for_vulns(conn=None):
+    """Drop vulns FTS5 triggers, yield, then rebuild and reinstate.
+
+    Use this around a Full-Sync bulk write of vulns to skip per-row FTS5
+    maintenance. The single 'rebuild' at exit re-creates the inverted
+    index from the parent table in one pass.
+    """
+    with _maybe_db(conn) as c:
+        c.execute("DROP TRIGGER IF EXISTS vulns_ai")
+        c.execute("DROP TRIGGER IF EXISTS vulns_ad")
+        c.execute("DROP TRIGGER IF EXISTS vulns_au")
+        c.commit()
+    try:
+        yield
+    finally:
+        with _maybe_db(conn) as c:
+            c.execute("INSERT INTO vulns_fts(vulns_fts) VALUES('rebuild')")
+            c.executescript(_VULNS_FTS_TRIGGERS)
+            c.commit()
+        logger.info("[FTS5] vulns_fts rebuilt and triggers reinstated")
+
+
+@_contextlib.contextmanager
+def fts5_deferred_for_controls(conn=None):
+    """Drop controls FTS5 triggers, yield, then rebuild and reinstate."""
+    with _maybe_db(conn) as c:
+        c.execute("DROP TRIGGER IF EXISTS controls_ai")
+        c.execute("DROP TRIGGER IF EXISTS controls_ad")
+        c.execute("DROP TRIGGER IF EXISTS controls_au")
+        c.commit()
+    try:
+        yield
+    finally:
+        with _maybe_db(conn) as c:
+            c.execute("INSERT INTO controls_fts(controls_fts) VALUES('rebuild')")
+            c.executescript(_CONTROLS_FTS_TRIGGERS)
+            c.commit()
+        logger.info("[FTS5] controls_fts rebuilt and triggers reinstated")
+
+
 def _xml_text(val):
     # xmltodict turns `<BASE source="cve">5.0</BASE>` into
     # `{"@source": "cve", "#text": "5.0"}`. Unwrap to the scalar.
@@ -1399,16 +1620,42 @@ def _fts5_safe(q: str) -> str:
     return " ".join(quoted)
 
 
-def upsert_vuln(vuln: dict, conn=None):
+def upsert_vuln(vuln: dict, conn=None, skip_unchanged: bool = False):
     """Insert or update a vulnerability from parsed Qualys XML data.
 
     Pass ``conn`` to participate in an outer transaction (sync paths batch
     a whole page worth of upserts inside a single ``get_db()`` block to
     avoid one fsync per QID).
+
+    ``skip_unchanged=True`` (Delta sync) compares a SHA-256 of the input
+    dict against the row's previously-stored ``source_hash`` and returns
+    early when they match, bypassing every parent + child write and the
+    FTS5 trigger maintenance. Full Sync passes ``False`` because rows are
+    purged before the run, so the hash will always miss and the lookup
+    is wasted work.
     """
     qid = int(vuln.get("QID", 0))
     if not qid:
         return
+
+    # Compute the source hash. Used both for skip-on-unchanged and for
+    # storage in the row so the next Delta can compare. json.dumps with
+    # sort_keys=True canonicalizes dict ordering; default=str handles
+    # any non-JSON-native types xmltodict might surface.
+    src_hash = hashlib.sha256(
+        json.dumps(vuln, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+
+    if skip_unchanged:
+        with _maybe_db(conn) as _check_conn:
+            existing = _check_conn.execute(
+                "SELECT source_hash FROM vulns WHERE qid=?", (qid,)
+            ).fetchone()
+        if existing and existing[0] == src_hash:
+            # Nothing about this QID has changed since last sync — skip
+            # parent UPDATE, all five child-table rewrites, and FTS5
+            # maintenance. The dominant Delta-sync win.
+            return
 
     # Extract CVSS data
     cvss = vuln.get("CVSS", {}) or {}
@@ -1486,8 +1733,8 @@ def upsert_vuln(vuln: dict, conn=None):
                 correlation_json, threat_intelligence_json, software_list_json,
                 threat_active_attacks, threat_exploit_public, threat_easy_exploit,
                 threat_malware, threat_rce, threat_priv_escalation, threat_cisa_kev,
-                exploit_count, malware_count
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                exploit_count, malware_count, threat_backfill_done, source_hash
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 qid,
                 vuln.get("VULN_TYPE"),
@@ -1526,85 +1773,117 @@ def upsert_vuln(vuln: dict, conn=None):
                 threat_cisa_kev,
                 exploit_count,
                 malware_count,
+                # threat_backfill_done — every upsert directly classifies
+                # the row's threat flags from the JSON in this same call,
+                # so the row never needs the init_db backfill pass.
+                1,
+                # source_hash — SHA-256 of the canonicalized input dict;
+                # used by future Delta-sync calls (skip_unchanged=True)
+                # to decide whether anything about this QID has changed.
+                src_hash,
             ),
         )
 
-        # Upsert CVEs
+        # ── Child-table writes via executemany ──
+        # Each QID can have N CVEs / bugtraqs / vendor refs / RTI tags /
+        # supported modules. The pre-2.4 path issued a separate
+        # `conn.execute(INSERT OR IGNORE...)` per row, costing one
+        # Python↔SQLite roundtrip per child record. On low-end hosts
+        # (2 vCPU / Hyper-V) per-record SQL work dominated the sync time
+        # and dragged a 200K-QID Full Sync past 3 hours. `executemany`
+        # batches every child of a given type into a single prepared-
+        # statement call, eliminating those roundtrips. INSERT OR IGNORE
+        # semantics are unchanged. Empty rows are simply not appended,
+        # so executemany is a no-op when a QID has no CVEs (etc.).
+
+        # CVEs
         cve_list_container = vuln.get("CVE_LIST", {}) or {}
         cves = _ensure_list(cve_list_container.get("CVE"))
         conn.execute("DELETE FROM vuln_cves WHERE qid=?", (qid,))
-        for cve in cves:
-            if isinstance(cve, dict):
-                conn.execute(
-                    "INSERT OR IGNORE INTO vuln_cves (qid, cve_id, url) VALUES (?,?,?)",
-                    (qid, cve.get("ID"), cve.get("URL")),
-                )
+        cve_rows = [
+            (qid, cve.get("ID"), cve.get("URL"))
+            for cve in cves if isinstance(cve, dict)
+        ]
+        if cve_rows:
+            conn.executemany(
+                "INSERT OR IGNORE INTO vuln_cves (qid, cve_id, url) VALUES (?,?,?)",
+                cve_rows,
+            )
 
-        # Upsert Bugtraqs
+        # Bugtraqs
         bt_container = vuln.get("BUGTRAQ_LIST", {}) or {}
         bts = _ensure_list(bt_container.get("BUGTRAQ"))
         conn.execute("DELETE FROM vuln_bugtraqs WHERE qid=?", (qid,))
-        for bt in bts:
-            if isinstance(bt, dict):
-                conn.execute(
-                    "INSERT OR IGNORE INTO vuln_bugtraqs (qid, bugtraq_id, url) VALUES (?,?,?)",
-                    (qid, bt.get("ID"), bt.get("URL")),
-                )
+        bt_rows = [
+            (qid, bt.get("ID"), bt.get("URL"))
+            for bt in bts if isinstance(bt, dict)
+        ]
+        if bt_rows:
+            conn.executemany(
+                "INSERT OR IGNORE INTO vuln_bugtraqs (qid, bugtraq_id, url) VALUES (?,?,?)",
+                bt_rows,
+            )
 
-        # Upsert vendor refs
+        # Vendor refs
         vr_container = vuln.get("VENDOR_REFERENCE_LIST", {}) or {}
         vrs = _ensure_list(vr_container.get("VENDOR_REFERENCE"))
         conn.execute("DELETE FROM vuln_vendor_refs WHERE qid=?", (qid,))
-        for vr in vrs:
-            if isinstance(vr, dict):
-                conn.execute(
-                    "INSERT OR IGNORE INTO vuln_vendor_refs (qid, vendor_ref_id, url) VALUES (?,?,?)",
-                    (qid, vr.get("ID"), vr.get("URL")),
-                )
+        vr_rows = [
+            (qid, vr.get("ID"), vr.get("URL"))
+            for vr in vrs if isinstance(vr, dict)
+        ]
+        if vr_rows:
+            conn.executemany(
+                "INSERT OR IGNORE INTO vuln_vendor_refs (qid, vendor_ref_id, url) VALUES (?,?,?)",
+                vr_rows,
+            )
 
-        # Upsert RTI tags
+        # RTI tags — accumulate intel tags + the synthetic has_exploit tag
+        # into one list, then write in a single executemany.
         conn.execute("DELETE FROM vuln_rti WHERE qid=?", (qid,))
-        ti_json = threat_json
-        if ti_json and ti_json not in ("{}", "null"):
-            ti = json.loads(ti_json) if isinstance(ti_json, str) else ti_json
+        rti_rows: list[tuple[int, str]] = []
+        if threat_json and threat_json not in ("{}", "null"):
+            ti = json.loads(threat_json) if isinstance(threat_json, str) else threat_json
             intel_items = _ensure_list(ti.get("THREAT_INTEL")) if isinstance(ti, dict) else []
             for item in intel_items:
                 if isinstance(item, dict):
                     tag = item.get("#text") or item.get("ID")
                     if tag:
-                        conn.execute(
-                            "INSERT OR IGNORE INTO vuln_rti (qid, rti_tag) VALUES (?,?)",
-                            (qid, tag),
-                        )
-        # Exploit correlation → has_exploit tag
+                        rti_rows.append((qid, tag))
         if correlation_json and correlation_json not in ("{}", "null"):
-            conn.execute(
+            rti_rows.append((qid, "has_exploit"))
+        if rti_rows:
+            conn.executemany(
                 "INSERT OR IGNORE INTO vuln_rti (qid, rti_tag) VALUES (?,?)",
-                (qid, "has_exploit"),
+                rti_rows,
             )
 
-        # Upsert supported modules (agent/scanner types)
+        # Supported modules (agent/scanner types)
         conn.execute("DELETE FROM vuln_supported_modules WHERE qid=?", (qid,))
         sm_raw = vuln.get("SUPPORTED_MODULES")
+        module_items: list = []
         if sm_raw:
             if isinstance(sm_raw, str):
-                # Single module returned as plain string
                 module_items = [sm_raw]
             elif isinstance(sm_raw, dict):
                 module_items = _ensure_list(sm_raw.get("SUPPORTED_MODULE"))
             elif isinstance(sm_raw, list):
                 module_items = sm_raw
+        sm_rows: list[tuple[int, str]] = []
+        for mod in module_items:
+            if isinstance(mod, str):
+                mod_name = mod
+            elif isinstance(mod, dict):
+                mod_name = mod.get("#text") or mod.get("MODULE_NAME") or str(mod)
             else:
-                module_items = []
-            for mod in module_items:
-                mod_name = mod if isinstance(mod, str) else (
-                    mod.get("#text") or mod.get("MODULE_NAME") or str(mod)
-                ) if isinstance(mod, dict) else str(mod)
-                if mod_name and mod_name.strip():
-                    conn.execute(
-                        "INSERT OR IGNORE INTO vuln_supported_modules (qid, module_name) VALUES (?,?)",
-                        (qid, mod_name.strip()),
-                    )
+                mod_name = str(mod)
+            if mod_name and mod_name.strip():
+                sm_rows.append((qid, mod_name.strip()))
+        if sm_rows:
+            conn.executemany(
+                "INSERT OR IGNORE INTO vuln_supported_modules (qid, module_name) VALUES (?,?)",
+                sm_rows,
+            )
 
 
 def search_vulns(
@@ -2261,25 +2540,28 @@ def upsert_control(control: dict, conn=None):
             ),
         )
 
-        # Technologies
+        # Technologies — batched via executemany.
         tech_container = control.get("TECHNOLOGY_LIST", {}) or {}
         techs = _ensure_list(tech_container.get("TECHNOLOGY"))
         conn.execute("DELETE FROM control_technologies WHERE cid=?", (cid,))
-        for tech in techs:
-            if isinstance(tech, dict):
-                conn.execute(
-                    """INSERT INTO control_technologies
-                       (cid, tech_id, tech_name, rationale, description, datapoint_json)
-                       VALUES (?,?,?,?,?,?)""",
-                    (
-                        cid,
-                        tech.get("TECH_ID") or tech.get("ID"),
-                        tech.get("TECH_NAME") or tech.get("NAME"),
-                        tech.get("RATIONALE"),
-                        tech.get("DESCRIPTION"),
-                        json.dumps(tech.get("DATAPOINTS")) if tech.get("DATAPOINTS") else None,
-                    ),
-                )
+        tech_rows = [
+            (
+                cid,
+                tech.get("TECH_ID") or tech.get("ID"),
+                tech.get("TECH_NAME") or tech.get("NAME"),
+                tech.get("RATIONALE"),
+                tech.get("DESCRIPTION"),
+                json.dumps(tech.get("DATAPOINTS")) if tech.get("DATAPOINTS") else None,
+            )
+            for tech in techs if isinstance(tech, dict)
+        ]
+        if tech_rows:
+            conn.executemany(
+                """INSERT INTO control_technologies
+                   (cid, tech_id, tech_name, rationale, description, datapoint_json)
+                   VALUES (?,?,?,?,?,?)""",
+                tech_rows,
+            )
 
         # Frameworks / Mandates — extract from control response and link
         _extract_mandates_for_cid(conn, cid, control)
@@ -2572,28 +2854,34 @@ def upsert_policy(policy: dict, conn=None):
             ),
         )
 
-        # Policy controls
+        # Policy controls — batched via executemany for the same reason
+        # upsert_vuln batches its child tables: each policy can carry many
+        # controls and per-row execute() roundtrips show up on slow hosts.
         ctrl_container = policy.get("CONTROL_LIST", {}) or {}
         ctrls = _ensure_list(ctrl_container.get("CONTROL"))
         if ctrls:
             conn.execute("DELETE FROM policy_controls WHERE policy_id=?", (policy_id,))
+            ctrl_rows = []
             for ctrl in ctrls:
-                if isinstance(ctrl, dict):
-                    crit = ctrl.get("CRITICALITY", {}) or {}
-                    conn.execute(
-                        """INSERT INTO policy_controls
-                           (policy_id, cid, statement, criticality_label,
-                            criticality_value, deprecated)
-                           VALUES (?,?,?,?,?,?)""",
-                        (
-                            policy_id,
-                            int(ctrl.get("CID", 0) or 0),
-                            ctrl.get("STATEMENT"),
-                            crit.get("LABEL"),
-                            int(crit.get("VALUE", 0) or 0),
-                            1 if str(ctrl.get("DEPRECATED", "")).lower() in ("1", "true") else 0,
-                        ),
-                    )
+                if not isinstance(ctrl, dict):
+                    continue
+                crit = ctrl.get("CRITICALITY", {}) or {}
+                ctrl_rows.append((
+                    policy_id,
+                    int(ctrl.get("CID", 0) or 0),
+                    ctrl.get("STATEMENT"),
+                    crit.get("LABEL"),
+                    int(crit.get("VALUE", 0) or 0),
+                    1 if str(ctrl.get("DEPRECATED", "")).lower() in ("1", "true") else 0,
+                ))
+            if ctrl_rows:
+                conn.executemany(
+                    """INSERT INTO policy_controls
+                       (policy_id, cid, statement, criticality_label,
+                        criticality_value, deprecated)
+                       VALUES (?,?,?,?,?,?)""",
+                    ctrl_rows,
+                )
 
             # Resolve CID=0 by matching statement text against controls table.
             # The controls table stores HTML entities (&apos; etc.) while
@@ -4609,19 +4897,20 @@ def upsert_pm_patch(patch: dict, conn=None) -> str | None:
              kb_article, package_names, now, json.dumps(patch, default=str)),
         )
 
-        # Refresh per-patch link tables. Keeps the relations in sync if a
-        # patch's qid or cve list is amended on the Qualys side.
+        # Refresh per-patch link tables — batched via executemany. Keeps
+        # the relations in sync if a patch's qid or cve list is amended
+        # on the Qualys side.
         conn.execute("DELETE FROM pm_patch_qids WHERE patch_id=?", (patch_id,))
-        for q in qid_ints:
-            conn.execute(
+        if qid_ints:
+            conn.executemany(
                 "INSERT OR IGNORE INTO pm_patch_qids (patch_id, qid) VALUES (?,?)",
-                (patch_id, q),
+                [(patch_id, q) for q in qid_ints],
             )
         conn.execute("DELETE FROM pm_patch_cves WHERE patch_id=?", (patch_id,))
-        for cv in cve_clean:
-            conn.execute(
+        if cve_clean:
+            conn.executemany(
                 "INSERT OR IGNORE INTO pm_patch_cves (patch_id, cve_id) VALUES (?,?)",
-                (patch_id, cv),
+                [(patch_id, cv) for cv in cve_clean],
             )
 
     return patch_id

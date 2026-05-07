@@ -158,13 +158,24 @@ items previously listed here have moved to v2.3.
 
 ---
 
-## Planned (v2.3)
+## Completed (v2.4 — Sync Ingest Performance)
+
+| # | Feature | Type | Status |
+|---|---------|------|--------|
+| 94 | `executemany` for child-table inserts in `upsert_vuln`, `upsert_control`, `upsert_policy`, `upsert_pm_patch` — closes the v2.0 follow-up that was tracked but never shipped | backend | Shipped |
+| 95 | Performance characteristics docs — side-by-side reference timings for a high-end developer Mac vs a low-end Hyper-V/Azure RHEL VM, plus hardware and code-side levers | docs | Shipped |
+
+---
+
+## Planned (v2.5)
 
 | # | Feature | Type | Status |
 |---|---------|------|--------|
 | 91 | PM Patch Catalog UI — dedicated browse/search tab for the 218K+ patch catalog with filters by platform, vendor, severity, security/non-security, and KB article. Direct patch-to-QID cross-navigation. | full-stack | Planned |
 | 92 | Tag migration improvements — inline rename editing in collision preflight, batch rename patterns, drag-and-drop parent reassignment, migration dry-run preview | full-stack | Planned |
 | 93 | QID solution text with structured vendor links — parse vendor fix URLs, advisory links, and KB articles from the solution/diagnosis HTML into clickable structured references for macOS, Unix, and other platforms not covered by the PM API | full-stack | Planned |
+| 96 | Skip child-table DELETE+rewrite when the source payload hash is unchanged. Doesn't help Full Sync; turns Delta near-free. | backend | Planned |
+| 97 | Pre-compiled bleach sanitizer reused across calls (currently rebuilt per record). Tracked from the v2.0 follow-up. | backend | Planned |
 
 ---
 
