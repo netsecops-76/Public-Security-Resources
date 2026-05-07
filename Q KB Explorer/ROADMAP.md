@@ -171,6 +171,18 @@ items previously listed here have moved to v2.3.
 
 ---
 
+## Completed (v2.4.2 — Tag Classification Policy Alignment)
+
+| # | Feature | Type | Status |
+|---|---------|------|--------|
+| 107 | `upsert_tag` derives `is_user_created` from `tag_origin` (system/connector → 0) before falling through to reservedType/sentinel logic — closes the gap exposed by the QPS Tag API returning reservedType=null + createdBy=null on every tag in a real subscription pull | backend | Shipped |
+| 108 | `search_tags` only_user/only_system filter rewritten to use effective `is_user_created` via a CASE expression that mirrors `_apply_classification_override` exactly. Pre-v2.4.2 the filter used `tag_origin` and never consulted classification_override, so card and filter could disagree | backend | Shipped |
+| 109 | Test suite triage — 8 pre-existing stale tag classification + validation tests aligned with the v2.1+ production policy. Suite 240/248 → 249/249 | tests | Shipped |
+| 110 | Regression test `test_tags_origin_overrides_classification_when_qualys_strips_metadata` pins the exact 167-pull production behavior across all four origin types | tests | Shipped |
+| 111 | BUGS-018 incident write-up + CHANGELOG v2.4.2 entry | docs | Shipped |
+
+---
+
 ## Completed (v2.4.1 — init_db Migration Hot-Fix)
 
 | # | Feature | Type | Status |

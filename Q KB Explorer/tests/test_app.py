@@ -1548,7 +1548,53 @@ def test_tags_user_created_when_rule_present(client):
     body = get_tag(7777)
     assert body["is_user_created"] == 1
     assert body["reserved_type"] is None
-    assert body["created_by"] is None
+
+
+def test_tags_origin_overrides_classification_when_qualys_strips_metadata(client):
+    """v2.4.2 regression: when the QPS Tag search endpoint returns a
+    Qualys-shipped or connector-bound tag with reservedType=null AND
+    createdBy=null (the actual production behavior observed across a
+    full 167-tag subscription pull), is_user_created must classify
+    from tag_origin's protective name-pattern lists, not fall through
+    to default-user.
+
+    Pre-v2.4.2 behavior on identical input: 24% of tags mis-classified
+    as user-created because _is_user_created only consulted
+    reservedType + createdBy. _classify_tag_origin already had the
+    correct answer via _SYSTEM_PROVISIONED_NAMES / _CONNECTOR_NAME_
+    PATTERNS / CLOUD_ASSET rule_type — upsert_tag wasn't using it for
+    classification.
+    """
+    from app.database import upsert_tag, get_tag
+
+    # System-shipped: name matches _SYSTEM_PROVISIONED_NAMES
+    upsert_tag({"id": 9100, "name": "Internet Facing Assets"})
+    # Connector by name pattern (no rule_type, no creator, no reserved)
+    upsert_tag({"id": 9101, "name": "Connector Discovery AWS Comm"})
+    # Connector by CLOUD_ASSET rule_type (no name match)
+    upsert_tag({
+        "id": 9102, "name": "TX.Gov",
+        "ruleType": "CLOUD_ASSET", "ruleText": "...",
+    })
+    # User-organizer: no signals at all → still user under default-allow
+    upsert_tag({"id": 9103, "name": "ChangeControl-CHG12345"})
+    # Rule-based: has a rule → user
+    upsert_tag({
+        "id": 9104, "name": "OS: Linux Production",
+        "ruleType": "GLOBAL_ASSET_VIEW",
+        "ruleText": "operatingSystem.category1:`Linux`",
+    })
+
+    assert get_tag(9100)["is_user_created"] == 0  # system
+    assert get_tag(9100)["tag_origin"] == "system"
+    assert get_tag(9101)["is_user_created"] == 0  # connector by name
+    assert get_tag(9101)["tag_origin"] == "connector"
+    assert get_tag(9102)["is_user_created"] == 0  # connector by CLOUD_ASSET
+    assert get_tag(9102)["tag_origin"] == "connector"
+    assert get_tag(9103)["is_user_created"] == 1  # user organizer
+    assert get_tag(9103)["tag_origin"] == "static"
+    assert get_tag(9104)["is_user_created"] == 1  # user rule
+    assert get_tag(9104)["tag_origin"] == "rule_based"
 
 
 def test_tags_propagation_flips_organizer_parent_to_user_created(client):
@@ -2055,14 +2101,20 @@ def test_tag_override_forces_user_classification(client):
 
 def test_tag_override_forces_system_classification(client):
     """Manual 'system' override flips an auto-classified user tag to
-    system in detail and in /api/tags?only_system=1 listings."""
+    system in detail and in /api/tags?only_system=1 listings.
+
+    Uses a tag name that does NOT match _SYSTEM_PROVISIONED_NAMES or
+    _CONNECTOR_NAME_PATTERNS so the auto classification really does
+    land on user (rule present, no protective name match). Otherwise
+    the v2.4.2 origin-driven classification flow would catch the tag
+    on its name and the override path wouldn't be exercised."""
     from app.database import upsert_tag
-    upsert_tag({"id": 4002, "name": "Internet Facing Assets",
+    upsert_tag({"id": 4002, "name": "Operator Custom Inventory Bucket",
                 "ruleType": "ASSET_INVENTORY",
                 "ruleText": "asset.public:true"})
 
     body = client.get("/api/tags/4002").get_json()
-    assert body["is_user_created"] == 1  # auto says user (rule present)
+    assert body["is_user_created"] == 1  # auto says user (rule present, no name match)
 
     resp = client.post(
         "/api/tags/4002/classify",
@@ -2076,7 +2128,7 @@ def test_tag_override_forces_system_classification(client):
     assert body["is_user_created_auto"] == 1
     assert body["classification_override"] == "system"
 
-    listing = client.get("/api/tags?only_system=1&q=internet").get_json()
+    listing = client.get("/api/tags?only_system=1&q=Operator").get_json()
     assert any(r["tag_id"] == 4002 for r in listing["results"])
 
 

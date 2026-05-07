@@ -4200,14 +4200,33 @@ def upsert_tag(tag: dict, credential_id: str | None = None,
 
     reserved = _first(tag, _TAG_RESERVED_FIELDS)
     creator = _extract_creator(tag)
-    is_user = _is_user_created(tag, reserved, creator)
-    is_edit = _is_editable(tag, is_user, reserved)
     parent_id = _coerce_int(_first(tag, _TAG_PARENT_FIELDS))
     crit = _coerce_int(_first(tag, _TAG_CRIT_FIELDS))
     rule_type = _first(tag, _TAG_RULE_TYPE_FIELDS)
     tag_name = tag.get("name") or tag.get("NAME") or ""
     created_dt = _first(tag, _TAG_CREATED_FIELDS)
     tag_origin = _classify_tag_origin(tag_name, rule_type, reserved, created_dt)
+
+    # v2.4.2: classify is_user_created from tag_origin first, then fall
+    # through to the reservedType / sentinel-creator logic. Real Qualys
+    # subscriptions surfaced via the QPS Tag search endpoint frequently
+    # arrive with reservedType=null AND createdBy=null even on tags that
+    # are unambiguously Qualys-shipped (Business Units, Cloud Agent,
+    # Internet Facing Assets, the EASM family) or connector-bound
+    # (AWS/Azure/GCP, vpc-*, Connector Discovery, etc.). The previous
+    # _is_user_created logic relied solely on those two fields and
+    # therefore mis-classified ~24% of tags as user-created on a
+    # representative 167-tag pull. _classify_tag_origin already uses
+    # the protective hard-coded name-pattern lists (_SYSTEM_PROVISIONED_
+    # NAMES, _CONNECTOR_NAME_PATTERNS) plus the CLOUD_ASSET rule_type
+    # heuristic to identify these tags correctly — we just weren't
+    # consulting that result here. Operator override via
+    # /api/tags/<id>/classify still wins for the rare false positive.
+    if tag_origin in ("system", "connector"):
+        is_user = 0
+    else:
+        is_user = _is_user_created(tag, reserved, creator)
+    is_edit = _is_editable(tag, is_user, reserved)
 
     now = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
@@ -4295,13 +4314,29 @@ def search_tags(
             conditions.append("t.parent_tag_id = ?")
             params.append(parent_tag_id)
 
-        # Filter by tag_origin which is the authoritative classification.
-        # "User" = everything except system (rule_based, static, connector).
-        # "System" = only system-provisioned tags.
+        # v2.4.2: filter by the effective is_user_created — i.e. the
+        # same value the rendered card shows after override resolution.
+        # Pre-v2.4.2 this used `tag_origin = 'system'` as the filter
+        # discriminator, which had two problems:
+        #   1) Connector tags (origin='connector') always landed in
+        #      only_user even though under the v2.4.2 origin-driven
+        #      classification they are is_user_created=0. The card
+        #      and the filter disagreed.
+        #   2) classification_override was applied to rendered rows
+        #      but never to the filter, so a tag manually re-classified
+        #      to 'system' stayed visible under only_user.
+        # Use a CASE expression that mirrors _apply_classification_override
+        # so the filter matches what the operator sees on the card.
+        effective_iuc = (
+            "(CASE "
+            "WHEN t.classification_override = 'user' THEN 1 "
+            "WHEN t.classification_override = 'system' THEN 0 "
+            "ELSE t.is_user_created END)"
+        )
         if only_user:
-            conditions.append("t.tag_origin != 'system'")
+            conditions.append(f"{effective_iuc} = 1")
         elif only_system:
-            conditions.append("t.tag_origin = 'system'")
+            conditions.append(f"{effective_iuc} = 0")
 
         where = "WHERE " + " AND ".join(conditions) if conditions else ""
         offset = (page - 1) * per_page
