@@ -266,28 +266,34 @@ Both numbers move with hardware. Two reference environments:
 | Same Mac — **v2.4 bundled (executemany + bleach Cleaner reuse + FTS5 deferred + source-hash skip)** | **8 min 5 s** | 208,765 QIDs, `VERIFY_OK`, zero errors. **10× faster than executemany-only on the same hardware**, faster than the v2.1.0 historical baseline. The slowdown curve is gone — per-chunk write times stayed flat (~2–5 s for 5K-record chunks) across the entire run. |
 | Low-end ops VM (RHEL 9.4 on Hyper-V/Azure, 2 vCPU) — pre-v2.4 | **3 h 34 min 46 s** | 208,760 QIDs, `VERIFY_OK`, zero errors. Throughput collapsed from ~23K rec/min in the first ~50K records to ~580 rec/min in the final chunks. |
 | Low-end ops VM — v2.4.0 in-place upgrade | **migration deadlock** | v2.4.0 init_db on a 3.3 GB / 208K legacy DB hung the entrypoint pre-flight import for 50+ minutes with zero forward write progress (CPU spinning on cached page reads, WAL frozen, gunicorn never bound). Two compounding bugs: single-transaction marker UPDATE blocking checkpoints, plus an O(N²) cursor thrash in the streaming backfill once the marker committed. Hidden on Mac M-series behind faster CPU. See BUGS.md BUG-017. **Fixed in v2.4.1**; recommended path on weak hardware is `docker compose down -v` + fresh Full Sync rather than waiting out the legacy migration. |
-| Low-end ops VM — v2.4.1 fresh install + Full Sync | TBD | post-v2.4.1 baseline pending. v2.4.1 init_db on a fresh DB completes in seconds (no legacy rows to migrate); Full Sync wall time is what matters here. Expectation based on the Mac v2.4 speedup: order-of-magnitude reduction from the 3 h 34 m pre-v2.4 baseline. |
+| Low-end ops VM — **v2.4.1 fresh install + Full Sync** | **18 min 11 s** | 208,765 QIDs, `VERIFY_OK`, zero errors, 59 pages fetched. **11.8× faster than the pre-v2.4 baseline on identical hardware.** init_db on the fresh DB finished in seconds (no legacy rows to migrate). Throughput stayed flat-to-improving across the full run; the DB-growth slowdown curve is gone. The final chunk (990k-999k, 9,979 items) ingested in ~18 s versus 1,039 s on pre-v2.4 — a 58× tail-chunk speedup. The bundled v2.4 perf changes (executemany child-table writes, pre-compiled bleach Cleaner reuse, FTS5 deferred indexing on Full Sync, source-hash skip for Delta) all land cleanly on weak hardware once the v2.4.1 init_db hot-fix is in place. |
 
-The low-end VM's per-chunk timing curve (pre-v2.4) shows the cost
-profile clearly: empty DB / no FTS5 fragmentation / minimal page
-cache pressure runs near hardware limits at the start, then per-record
-work climbs as the WAL grows, the FTS5 index needs more I/O per
-insert, and bleach + json.dumps + per-record SQL roundtrips compound.
+The low-end VM's per-chunk timing curve, pre-v2.4 vs post-v2.4.1, is
+the clearest single signal of what the perf bundle did. The pre-v2.4
+curve shows the cost profile that motivated the work: empty DB / no
+FTS5 fragmentation / minimal page cache pressure runs near hardware
+limits at the start, then per-record work climbs as the WAL grows,
+the FTS5 index needs more I/O per insert, and bleach + json.dumps +
+per-record SQL roundtrips compound. The post-v2.4.1 curve is flat
+across the same VM — the FTS5-deferred + executemany + bleach Cleaner
+reuse changes removed the DB-growth slowdown entirely.
 
-| Chunk | Items | Ingest time | Throughput |
-|-------|-------|-------------|------------|
-| 10k–20k (early) | 4,991 | 13 s | ~23,000 rec/min |
-| 110k–120k | 5,262 | 31 s | ~10,200 rec/min |
-| 160k–170k | 9,286 | 92 s | ~6,000 rec/min |
-| 280k–290k | 8,573 | 487 s | ~1,060 rec/min |
-| 510k–520k | 9,163 | 746 s | ~740 rec/min |
-| 990k–999k (final) | 9,979 | 1,039 s | ~580 rec/min |
+| Chunk | Items | Pre-v2.4 ingest time | Pre-v2.4 throughput | Post-v2.4.1 ingest time | Post-v2.4.1 throughput |
+|-------|-------|----------------------|---------------------|--------------------------|------------------------|
+| 10k–20k (early) | 4,991 | 13 s | ~23,000 rec/min | 9.3 s | ~32,000 rec/min |
+| 110k–120k | 5,262 | 31 s | ~10,200 rec/min | 22.3 s | ~14,200 rec/min |
+| 160k–170k | 9,286 | 92 s | ~6,000 rec/min | 22.9 s | ~24,300 rec/min |
+| 280k–290k | 8,573 | 487 s | ~1,060 rec/min | 15.9 s | ~32,400 rec/min |
+| 510k–520k | 9,163 | 746 s | ~740 rec/min | 19.5 s | ~28,200 rec/min |
+| 990k–999k (final) | 9,979 | 1,039 s | ~580 rec/min | 17.8 s | ~33,600 rec/min |
 
-The ~20–30× wall-time gap between the two environments is consistent with
-the hardware delta and is dominated by per-record CPU work plus single-VHD
-fsync latency. The executemany change in v2.4 cuts the SQLite roundtrip
-component for child-table writes; it does not change the bleach / xmltodict
-cost. Hardware-side levers that further help on the low-end host:
+**Post-v2.4.1 the wall-time gap between environments narrowed to ~2.2×
+(Mac 8 m 5 s vs RHEL VM 18 m 11 s),** down from the pre-v2.4 gap of
+~26× (Mac 9 m vs RHEL 3 h 35 m). What's left is largely API throughput
+from Qualys (the HTTP fetch phase is single-threaded and bounded by
+network + Qualys rate limits, not local hardware) plus single-VHD fsync
+latency on the WAL flush. Hardware-side levers that further help on the
+low-end host:
 
 - **Bump vCPU count** (4 vCPU helps more than 2× because the upsert loop is
   single-threaded but sync HTTP, FTS5 maintenance, and OS overhead compete
@@ -299,10 +305,12 @@ cost. Hardware-side levers that further help on the low-end host:
 
 Code-side levers tracked but not yet implemented:
 
-- Skip child-table `DELETE`+rewrite when the source payload hash is
-  unchanged. Doesn't help Full Sync, but turns Delta near-free.
-- Reduce `bleach.sanitize_html` cost via a pre-compiled sanitizer reused
-  across calls (currently rebuilt per record).
+- Extend the `source_hash` skip pattern from `upsert_vuln` to
+  `upsert_control`, `upsert_policy`, `upsert_pm_patch` so non-vuln
+  Delta syncs benefit from the same short-circuit.
+- Index `threat_backfill_done` so the v2.4.1 marker UPDATE and worklist
+  build queries don't need a full table scan even on the chunked path.
+  Defensive — current behavior is fast enough on the hardware tested.
 
 ## External Dependencies
 
